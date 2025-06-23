@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Clock, Briefcase, User, LogOut, Play, Pause, Square, CheckCircle } from "lucide-react"
+import { Clock, Briefcase, User, LogOut, Play, Pause, Square, CheckCircle, RefreshCw } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -45,19 +45,49 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const [timers, setTimers] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<Map<string, boolean>>(new Map())
+  const [refreshing, setRefreshing] = useState(false)
   const router = useRouter()
   const supabase = createClient()
 
-  // Timer update effect
+  // Background update effect - updates time spent every 30 seconds
+  useEffect(() => {
+    const backgroundUpdate = setInterval(async () => {
+      if (activeTimeEntries.size > 0) {
+        try {
+          await fetch("/api/time-tracking/update-background", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ employee_id: employee.id }),
+          })
+        } catch (error) {
+          console.error("Background update error:", error)
+        }
+      }
+    }, 30000) // Update every 30 seconds
+
+    return () => clearInterval(backgroundUpdate)
+  }, [activeTimeEntries, employee.id])
+
+  // Timer update effect - updates UI every second
   useEffect(() => {
     const interval = setInterval(() => {
       setTimers((prev) => {
         const newTimers = new Map(prev)
         activeTimeEntries.forEach((entry, taskId) => {
-          if (entry.is_active) {
+          if (entry.is_active && entry.status === "running") {
             const startTime = new Date(entry.start_time).getTime()
+            const pauseTime = entry.pause_start_time ? new Date(entry.pause_start_time).getTime() : 0
             const currentTime = Date.now()
-            const elapsedSeconds = Math.floor((currentTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
+
+            let elapsedSeconds = 0
+            if (pauseTime > 0) {
+              // Currently paused
+              elapsedSeconds = Math.floor((pauseTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
+            } else {
+              // Currently running
+              elapsedSeconds = Math.floor((currentTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
+            }
+
             newTimers.set(taskId, Math.max(0, elapsedSeconds))
           }
         })
@@ -72,7 +102,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     try {
       setLoading(true)
 
-      // Fetch organization name - try both 'name' and 'company_name' fields
+      // Fetch organization name
       const { data: orgData, error: orgError } = await supabase
         .from("organizations")
         .select("name, company_name")
@@ -83,12 +113,13 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         console.error("Organization fetch error:", orgError)
       }
 
-      // Fetch tasks assigned to employee with project info
+      // Fetch tasks with time entries
       const { data: tasksData, error: tasksError } = await supabase
         .from("tasks")
         .select(`
           *,
-          projects!inner(id, name)
+          projects!inner(id, name),
+          time_entries(*)
         `)
         .eq("employee_id", employee.id)
         .eq("is_active", true)
@@ -108,20 +139,17 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         console.error("Active entries fetch error:", activeError)
       }
 
-      // Fetch time entries for total hours
-      const { data: timeEntries, error: timeError } = await supabase
-        .from("time_entries")
-        .select("duration_seconds")
-        .eq("employee_id", employee.id)
-        .not("duration_seconds", "is", null)
+      // Calculate total time logged
+      let totalSeconds = 0
+      tasksData?.forEach((task) => {
+        const taskEntries = task.time_entries || []
+        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
+          return sum + (entry.duration_seconds || 0)
+        }, 0)
+        totalSeconds += taskTotal
+      })
 
-      if (timeError) {
-        console.error("Time entries fetch error:", timeError)
-      }
-
-      const totalSeconds = timeEntries?.reduce((sum, entry) => sum + (entry.duration_seconds || 0), 0) || 0
-
-      const assignedTasks = tasksData?.length || 0
+      const assignedTasks = tasksData?.filter((task) => task.status !== "Completed").length || 0
       const completedTasks = tasksData?.filter((task) => task.status === "Completed").length || 0
 
       // Get unique projects
@@ -179,10 +207,32 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
 
-    if (hours > 0) {
+    if (hours > 0 && minutes > 0) {
       return `${hours}h ${minutes}m`
-    } else {
+    } else if (hours > 0) {
+      return `${hours}h`
+    } else if (minutes > 0) {
       return `${minutes}m`
+    } else {
+      return "0m"
+    }
+  }
+
+  const refreshData = async () => {
+    setRefreshing(true)
+    try {
+      await fetch("/api/time-tracking/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employee_id: employee.id }),
+      })
+      await fetchDashboardData()
+      toast.success("Data refreshed successfully")
+    } catch (error) {
+      console.error("Refresh error:", error)
+      toast.error("Failed to refresh data")
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -227,7 +277,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to start task")
       }
 
-      // Update local state instead of full refresh
+      // Update local state
       const { data: newEntry } = await supabase
         .from("time_entries")
         .select("*")
@@ -238,8 +288,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
 
       if (newEntry) {
         setActiveTimeEntries((prev) => new Map(prev).set(taskId, newEntry))
-
-        // Update task status locally
         setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "In Progress" } : task)))
       }
 
@@ -353,6 +401,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       }))
 
       toast.success("Task completed successfully")
+      await fetchDashboardData() // Refresh to get final time
     } catch (error) {
       console.error("Error completing task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to complete task")
@@ -361,19 +410,62 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     }
   }
 
-  const getTaskActions = (task: TaskWithProject) => {
+  const getTimeSpentDisplay = (task: TaskWithProject) => {
     const activeEntry = activeTimeEntries.get(task.id)
     const currentTimer = timers.get(task.id) || 0
+
+    if (task.status === "Completed") {
+      // Show final time spent from database
+      const taskEntries = task.time_entries || []
+      const totalSeconds = taskEntries.reduce((sum: number, entry: any) => {
+        return sum + (entry.duration_seconds || 0)
+      }, 0)
+      return <div className="text-sm font-medium">{formatDuration(totalSeconds)}</div>
+    }
+
+    if (activeEntry && activeEntry.status === "running") {
+      // Show running timer
+      return (
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 text-sm font-mono bg-blue-100 text-blue-800 px-2 py-1 rounded">
+            <Clock className="h-3 w-3" />
+            {formatTime(currentTimer)}
+          </div>
+        </div>
+      )
+    }
+
+    if (activeEntry && activeEntry.status === "paused") {
+      // Show paused timer
+      return (
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 text-sm font-mono bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+            <Pause className="h-3 w-3" />
+            {formatTime(currentTimer)}
+          </div>
+        </div>
+      )
+    }
+
+    // Show accumulated time for in-progress tasks or 0 for assigned tasks
+    const taskEntries = task.time_entries || []
+    const totalSeconds = taskEntries.reduce((sum: number, entry: any) => {
+      return sum + (entry.duration_seconds || 0)
+    }, 0)
+
+    return <div className="text-sm text-gray-600">{totalSeconds > 0 ? formatDuration(totalSeconds) : "0h 0m"}</div>
+  }
+
+  const getTaskActions = (task: TaskWithProject) => {
+    const activeEntry = activeTimeEntries.get(task.id)
     const isLoading = actionLoading.get(task.id) || false
 
     if (task.status === "Completed") {
       return (
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="bg-green-100 text-green-800">
-            <CheckCircle className="h-3 w-3 mr-1" />
-            Completed
-          </Badge>
-        </div>
+        <Badge variant="secondary" className="bg-green-100 text-green-800">
+          <CheckCircle className="h-3 w-3 mr-1" />
+          Completed
+        </Badge>
       )
     }
 
@@ -396,10 +488,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       // Task is running
       return (
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 text-sm font-mono bg-blue-100 text-blue-800 px-2 py-1 rounded">
-            <Clock className="h-3 w-3" />
-            {formatTime(currentTimer)}
-          </div>
           <Button onClick={() => pauseTimeTracking(task.id)} size="sm" variant="outline" disabled={isLoading}>
             <Pause className="h-4 w-4 mr-1" />
             {isLoading ? "Pausing..." : "Pause"}
@@ -419,10 +507,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       // Task is paused
       return (
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 text-sm font-mono bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-            <Pause className="h-3 w-3" />
-            {formatTime(currentTimer)}
-          </div>
           <Button
             onClick={() => resumeTimeTracking(task.id)}
             size="sm"
@@ -481,10 +565,16 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
                 Welcome back, {employee.first_name} {employee.last_name}
               </p>
             </div>
-            <Button onClick={handleLogout} variant="outline" size="sm">
-              <LogOut className="h-4 w-4 mr-2" />
-              Logout
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button onClick={refreshData} variant="outline" size="sm" disabled={refreshing}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </Button>
+              <Button onClick={handleLogout} variant="outline" size="sm">
+                <LogOut className="h-4 w-4 mr-2" />
+                Logout
+              </Button>
+            </div>
           </div>
         </div>
       </header>
@@ -580,7 +670,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
                       <TableCell>
                         <Badge className={getStatusBadgeColor(task.status)}>{task.status}</Badge>
                       </TableCell>
-                      <TableCell>{formatDuration(task.time_spent || 0)}</TableCell>
+                      <TableCell>{getTimeSpentDisplay(task)}</TableCell>
                       <TableCell>{getTaskActions(task)}</TableCell>
                     </TableRow>
                   ))}
