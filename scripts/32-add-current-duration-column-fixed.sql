@@ -16,17 +16,17 @@ BEGIN
     ELSE
         RAISE NOTICE 'current_duration_seconds column already exists in time_entries table';
     END IF;
+
+    -- Update existing paused entries to have current_duration_seconds
+    UPDATE time_entries 
+    SET current_duration_seconds = COALESCE(
+        EXTRACT(EPOCH FROM (
+            COALESCE(pause_start_time, updated_at) - start_time
+        ))::INTEGER - COALESCE(total_paused_seconds, 0),
+        0
+    )
+    WHERE status = 'paused' 
+    AND (current_duration_seconds IS NULL OR current_duration_seconds = 0);
+
+    RAISE NOTICE 'Updated existing paused entries with current_duration_seconds';
 END $$;
-
--- Update existing paused entries to have current_duration_seconds
-UPDATE time_entries 
-SET current_duration_seconds = COALESCE(
-    EXTRACT(EPOCH FROM (
-        COALESCE(pause_start_time, updated_at) - start_time
-    ))::INTEGER - COALESCE(total_paused_seconds, 0),
-    0
-)
-WHERE status = 'paused' 
-AND current_duration_seconds IS NULL;
-
-RAISE NOTICE 'Updated existing paused entries with current_duration_seconds';
