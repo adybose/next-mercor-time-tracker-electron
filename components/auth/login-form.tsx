@@ -50,58 +50,68 @@ export function LoginForm() {
       // Wait for session to be established
       await new Promise((resolve) => setTimeout(resolve, 500))
 
-      // Use RPC function to bypass RLS issues
-      console.log("🔍 Checking user type...")
+      // Use the service role function to bypass RLS completely
+      console.log("🔍 Checking user type with service function...")
 
       try {
-        // Check organizations first
-        const { data: orgData, error: orgError } = await supabase
-          .from("organizations")
-          .select("id, company_name")
-          .eq("id", authData.user.id)
-          .maybeSingle()
+        const { data: userTypeData, error: userTypeError } = await supabase.rpc("get_user_type", {
+          user_id: authData.user.id,
+        })
 
-        console.log("Organizations query result:", { data: orgData, error: orgError })
+        console.log("User type result:", { data: userTypeData, error: userTypeError })
 
-        if (orgData) {
-          console.log("✅ Organization user found:", orgData)
+        if (userTypeError) {
+          console.error("❌ User type check error:", userTypeError)
+          setError("Database error. Please try again.")
+          return
+        }
+
+        if (!userTypeData || userTypeData.length === 0) {
+          console.log("⚠️ No user type data returned")
+          setError("User account not found. Please contact support.")
+          return
+        }
+
+        const userType = userTypeData[0]?.user_type
+        const userData = userTypeData[0]?.user_data
+
+        console.log("User type:", userType, "Data:", userData)
+
+        if (userType === "organization") {
+          console.log("✅ Organization user found")
           router.push("/dashboard/organization")
           return
         }
 
-        // Check employees
-        const { data: empData, error: empError } = await supabase
-          .from("employees")
-          .select("id, first_name, last_name")
-          .eq("id", authData.user.id)
-          .maybeSingle()
-
-        console.log("Employees query result:", { data: empData, error: empError })
-
-        if (empData) {
-          console.log("✅ Employee user found:", empData)
+        if (userType === "employee") {
+          console.log("✅ Employee user found")
           router.push("/dashboard/employee")
           return
         }
 
-        // If no user found, create employee record
-        console.log("⚠️ User not found in database, creating employee record...")
+        if (userType === "not_found") {
+          console.log("⚠️ User not found in database, creating employee record...")
 
-        const { error: createError } = await supabase.from("employees").insert({
-          id: authData.user.id,
-          first_name: authData.user.user_metadata?.first_name || email.split("@")[0],
-          last_name: authData.user.user_metadata?.last_name || "",
-          email: authData.user.email,
-        })
+          // Create employee record
+          const { error: createError } = await supabase.from("employees").insert({
+            id: authData.user.id,
+            first_name: authData.user.user_metadata?.first_name || email.split("@")[0],
+            last_name: authData.user.user_metadata?.last_name || "",
+            email: authData.user.email,
+          })
 
-        if (createError) {
-          console.error("❌ Error creating user record:", createError)
-          setError("Account setup failed. Please contact support.")
+          if (createError) {
+            console.error("❌ Error creating user record:", createError)
+            setError("Account setup failed. Please contact support.")
+            return
+          }
+
+          console.log("✅ Employee record created successfully")
+          router.push("/dashboard/employee")
           return
         }
 
-        console.log("✅ Employee record created successfully")
-        router.push("/dashboard/employee")
+        setError("Unknown user type. Please contact support.")
       } catch (dbError: any) {
         console.error("❌ Database error:", dbError)
         setError("Database connection error. Please try again.")
