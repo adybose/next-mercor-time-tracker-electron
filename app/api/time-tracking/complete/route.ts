@@ -58,9 +58,9 @@ export async function POST(request: NextRequest) {
       .from("time_entries")
       .update({
         is_active: false,
+        status: "completed",
         end_time: currentTime.toISOString(),
         duration_seconds: activeSeconds,
-        hours: Math.round((activeSeconds / 3600) * 100) / 100, // Round to 2 decimal places
         updated_at: currentTime.toISOString(),
       })
       .eq("id", timeEntry.id)
@@ -75,6 +75,7 @@ export async function POST(request: NextRequest) {
       .from("tasks")
       .update({
         status: "Completed",
+        time_spent: (timeEntry.time_spent || 0) + activeSeconds,
         updated_at: currentTime.toISOString(),
       })
       .eq("id", task_id)

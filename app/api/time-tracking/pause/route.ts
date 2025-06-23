@@ -45,19 +45,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No active time entry found for this task" }, { status: 404 })
     }
 
-    // Calculate current session time and add to total paused seconds
-    const currentTime = new Date()
-    const startTime = new Date(timeEntry.start_time)
-    const sessionSeconds = Math.floor((currentTime.getTime() - startTime.getTime()) / 1000)
-    const totalActiveSeconds = sessionSeconds - (timeEntry.total_paused_seconds || 0)
-
     // Update time entry to paused state
     const { error: updateError } = await supabase
       .from("time_entries")
       .update({
         is_active: false,
-        last_pause_time: currentTime.toISOString(),
-        updated_at: currentTime.toISOString(),
+        status: "paused",
+        last_pause_time: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
       .eq("id", timeEntry.id)
 
@@ -68,7 +63,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       message: "Time tracking paused successfully",
-      active_seconds: totalActiveSeconds,
     })
   } catch (error) {
     console.error("Error in pause time tracking:", error)

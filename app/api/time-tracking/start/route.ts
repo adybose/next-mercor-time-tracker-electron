@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
         ip_address,
         mac_address,
         is_active: true,
+        status: "running",
         total_paused_seconds: 0,
       })
       .select()

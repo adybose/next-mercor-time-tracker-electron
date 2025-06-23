@@ -38,8 +38,7 @@ export async function POST(request: NextRequest) {
       .select("*")
       .eq("task_id", task_id)
       .eq("employee_id", employee.id)
-      .eq("is_active", false)
-      .not("last_pause_time", "is", null)
+      .eq("status", "paused")
       .order("created_at", { ascending: false })
       .limit(1)
       .single()
@@ -59,6 +58,7 @@ export async function POST(request: NextRequest) {
       .from("time_entries")
       .update({
         is_active: true,
+        status: "running",
         total_paused_seconds: newTotalPausedSeconds,
         last_pause_time: null,
         ip_address: ip_address || timeEntry.ip_address,
