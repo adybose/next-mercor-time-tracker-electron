@@ -44,6 +44,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const [activeTimeEntries, setActiveTimeEntries] = useState<Map<string, TimeEntry>>(new Map())
   const [timers, setTimers] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState<Map<string, boolean>>(new Map())
   const router = useRouter()
   const supabase = createClient()
 
@@ -71,10 +72,10 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     try {
       setLoading(true)
 
-      // Fetch organization name with better error handling
+      // Fetch organization name - try both 'name' and 'company_name' fields
       const { data: orgData, error: orgError } = await supabase
         .from("organizations")
-        .select("company_name")
+        .select("name, company_name")
         .eq("id", employee.organization_id)
         .single()
 
@@ -119,7 +120,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       }
 
       const totalSeconds = timeEntries?.reduce((sum, entry) => sum + (entry.duration_seconds || 0), 0) || 0
-      const totalHours = Math.round((totalSeconds / 3600) * 100) / 100
 
       const assignedTasks = tasksData?.length || 0
       const completedTasks = tasksData?.filter((task) => task.status === "Completed").length || 0
@@ -129,11 +129,11 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       const activeProjects = uniqueProjects.size
 
       setStats({
-        totalHoursLogged: totalHours,
+        totalHoursLogged: totalSeconds,
         activeProjects,
         assignedTasks,
         completedTasks,
-        organizationName: orgData?.company_name || "Unknown Organization",
+        organizationName: orgData?.name || orgData?.company_name || "Unknown Organization",
       })
 
       setTasks(tasksData || [])
@@ -175,6 +175,29 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
 
+  const formatDuration = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`
+    } else {
+      return `${minutes}m`
+    }
+  }
+
+  const setTaskLoading = (taskId: string, loading: boolean) => {
+    setActionLoading((prev) => {
+      const newMap = new Map(prev)
+      if (loading) {
+        newMap.set(taskId, true)
+      } else {
+        newMap.delete(taskId)
+      }
+      return newMap
+    })
+  }
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut()
@@ -186,6 +209,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   }
 
   const startTimeTracking = async (taskId: string) => {
+    setTaskLoading(taskId, true)
     try {
       const response = await fetch("/api/time-tracking/start", {
         method: "POST",
@@ -193,8 +217,8 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         body: JSON.stringify({
           task_id: taskId,
           description: "Task started from employee dashboard",
-          ip_address: "192.168.1.100", // Would be obtained from client
-          mac_address: "00:11:22:33:44:55", // Would be obtained from client
+          ip_address: "192.168.1.100",
+          mac_address: "00:11:22:33:44:55",
         }),
       })
 
@@ -203,15 +227,33 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to start task")
       }
 
-      await fetchDashboardData()
+      // Update local state instead of full refresh
+      const { data: newEntry } = await supabase
+        .from("time_entries")
+        .select("*")
+        .eq("task_id", taskId)
+        .eq("employee_id", employee.id)
+        .eq("is_active", true)
+        .single()
+
+      if (newEntry) {
+        setActiveTimeEntries((prev) => new Map(prev).set(taskId, newEntry))
+
+        // Update task status locally
+        setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "In Progress" } : task)))
+      }
+
       toast.success("Task started successfully")
     } catch (error) {
       console.error("Error starting task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to start task")
+    } finally {
+      setTaskLoading(taskId, false)
     }
   }
 
   const pauseTimeTracking = async (taskId: string) => {
+    setTaskLoading(taskId, true)
     try {
       const response = await fetch("/api/time-tracking/pause", {
         method: "POST",
@@ -224,15 +266,27 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to pause task")
       }
 
-      await fetchDashboardData()
+      // Update local state
+      setActiveTimeEntries((prev) => {
+        const newMap = new Map(prev)
+        const entry = newMap.get(taskId)
+        if (entry) {
+          newMap.set(taskId, { ...entry, is_active: false, status: "paused" })
+        }
+        return newMap
+      })
+
       toast.success("Task paused")
     } catch (error) {
       console.error("Error pausing task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to pause task")
+    } finally {
+      setTaskLoading(taskId, false)
     }
   }
 
   const resumeTimeTracking = async (taskId: string) => {
+    setTaskLoading(taskId, true)
     try {
       const response = await fetch("/api/time-tracking/resume", {
         method: "POST",
@@ -249,15 +303,27 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to resume task")
       }
 
-      await fetchDashboardData()
+      // Update local state
+      setActiveTimeEntries((prev) => {
+        const newMap = new Map(prev)
+        const entry = newMap.get(taskId)
+        if (entry) {
+          newMap.set(taskId, { ...entry, is_active: true, status: "running" })
+        }
+        return newMap
+      })
+
       toast.success("Task resumed")
     } catch (error) {
       console.error("Error resuming task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to resume task")
+    } finally {
+      setTaskLoading(taskId, false)
     }
   }
 
   const completeTask = async (taskId: string) => {
+    setTaskLoading(taskId, true)
     try {
       const response = await fetch("/api/time-tracking/complete", {
         method: "POST",
@@ -270,17 +336,35 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to complete task")
       }
 
-      await fetchDashboardData()
+      // Update local state
+      setActiveTimeEntries((prev) => {
+        const newMap = new Map(prev)
+        newMap.delete(taskId)
+        return newMap
+      })
+
+      setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "Completed" } : task)))
+
+      // Update stats
+      setStats((prev) => ({
+        ...prev,
+        completedTasks: prev.completedTasks + 1,
+        assignedTasks: prev.assignedTasks - 1,
+      }))
+
       toast.success("Task completed successfully")
     } catch (error) {
       console.error("Error completing task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to complete task")
+    } finally {
+      setTaskLoading(taskId, false)
     }
   }
 
   const getTaskActions = (task: TaskWithProject) => {
     const activeEntry = activeTimeEntries.get(task.id)
     const currentTimer = timers.get(task.id) || 0
+    const isLoading = actionLoading.get(task.id) || false
 
     if (task.status === "Completed") {
       return (
@@ -296,9 +380,14 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     if (!activeEntry) {
       // Task not started
       return (
-        <Button onClick={() => startTimeTracking(task.id)} size="sm" className="bg-green-600 hover:bg-green-700">
+        <Button
+          onClick={() => startTimeTracking(task.id)}
+          size="sm"
+          className="bg-green-600 hover:bg-green-700"
+          disabled={isLoading}
+        >
           <Play className="h-4 w-4 mr-1" />
-          Start
+          {isLoading ? "Starting..." : "Start"}
         </Button>
       )
     }
@@ -311,13 +400,18 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
             <Clock className="h-3 w-3" />
             {formatTime(currentTimer)}
           </div>
-          <Button onClick={() => pauseTimeTracking(task.id)} size="sm" variant="outline">
+          <Button onClick={() => pauseTimeTracking(task.id)} size="sm" variant="outline" disabled={isLoading}>
             <Pause className="h-4 w-4 mr-1" />
-            Pause
+            {isLoading ? "Pausing..." : "Pause"}
           </Button>
-          <Button onClick={() => completeTask(task.id)} size="sm" className="bg-green-600 hover:bg-green-700">
+          <Button
+            onClick={() => completeTask(task.id)}
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            disabled={isLoading}
+          >
             <Square className="h-4 w-4 mr-1" />
-            Complete
+            {isLoading ? "Completing..." : "Complete"}
           </Button>
         </div>
       )
@@ -329,13 +423,23 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
             <Pause className="h-3 w-3" />
             {formatTime(currentTimer)}
           </div>
-          <Button onClick={() => resumeTimeTracking(task.id)} size="sm" className="bg-blue-600 hover:bg-blue-700">
+          <Button
+            onClick={() => resumeTimeTracking(task.id)}
+            size="sm"
+            className="bg-blue-600 hover:bg-blue-700"
+            disabled={isLoading}
+          >
             <Play className="h-4 w-4 mr-1" />
-            Resume
+            {isLoading ? "Resuming..." : "Resume"}
           </Button>
-          <Button onClick={() => completeTask(task.id)} size="sm" className="bg-green-600 hover:bg-green-700">
+          <Button
+            onClick={() => completeTask(task.id)}
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            disabled={isLoading}
+          >
             <Square className="h-4 w-4 mr-1" />
-            Complete
+            {isLoading ? "Completing..." : "Complete"}
           </Button>
         </div>
       )
@@ -395,7 +499,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
               <Clock className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.totalHoursLogged}h</div>
+              <div className="text-2xl font-bold">{formatDuration(stats.totalHoursLogged)}</div>
               <p className="text-xs text-muted-foreground">All time</p>
             </CardContent>
           </Card>
@@ -476,7 +580,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
                       <TableCell>
                         <Badge className={getStatusBadgeColor(task.status)}>{task.status}</Badge>
                       </TableCell>
-                      <TableCell>{Math.round(((task.time_spent || 0) / 3600) * 100) / 100}h</TableCell>
+                      <TableCell>{formatDuration(task.time_spent || 0)}</TableCell>
                       <TableCell>{getTaskActions(task)}</TableCell>
                     </TableRow>
                   ))}
