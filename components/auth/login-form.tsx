@@ -2,35 +2,23 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useState } from "react"
+import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { createClient } from "@/lib/supabase/client"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 
 export function LoginForm() {
-  const [formData, setFormData] = useState({
-    email: "",
-    password: "",
-  })
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const [message, setMessage] = useState("")
   const router = useRouter()
-  const searchParams = useSearchParams()
 
-  useEffect(() => {
-    const messageParam = searchParams.get("message")
-    if (messageParam) {
-      setMessage(messageParam)
-    }
-  }, [searchParams])
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError("")
@@ -38,52 +26,85 @@ export function LoginForm() {
     try {
       const supabase = createClient()
 
+      // Sign in the user
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email: formData.email,
-        password: formData.password,
+        email,
+        password,
       })
 
-      if (authError) throw authError
-
-      if (authData.user) {
-        // Check if user is an organization or employee
-        const { data: orgData } = await supabase.from("organizations").select("*").eq("id", authData.user.id).single()
-
-        if (orgData) {
-          // User is an organization
-          router.push("/dashboard/organization")
-        } else {
-          // Check if user is an employee
-          const { data: empData } = await supabase.from("employees").select("*").eq("id", authData.user.id).single()
-
-          if (empData) {
-            router.push("/dashboard/employee")
-          } else {
-            throw new Error("User account not found. Please contact support.")
-          }
-        }
+      if (authError) {
+        setError(authError.message)
+        return
       }
+
+      if (!authData.user) {
+        setError("Login failed - no user data received")
+        return
+      }
+
+      // Wait a moment for the session to be established
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+
+      // Check if user exists in our database
+      const { data: orgData } = await supabase
+        .from("organizations")
+        .select("id, company_name")
+        .eq("id", authData.user.id)
+        .maybeSingle()
+
+      if (orgData) {
+        console.log("Organization user found:", orgData)
+        router.push("/dashboard/organization")
+        return
+      }
+
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("id, first_name, last_name")
+        .eq("id", authData.user.id)
+        .maybeSingle()
+
+      if (empData) {
+        console.log("Employee user found:", empData)
+        router.push("/dashboard/employee")
+        return
+      }
+
+      // If user doesn't exist in our tables, create them
+      console.log("User not found in database, creating record...")
+
+      // Try to create employee record (default)
+      const { error: createError } = await supabase.from("employees").insert({
+        id: authData.user.id,
+        first_name: authData.user.user_metadata?.first_name || email.split("@")[0],
+        last_name: authData.user.user_metadata?.last_name || "",
+        email: authData.user.email,
+      })
+
+      if (createError) {
+        console.error("Error creating user record:", createError)
+        setError("Account setup failed. Please contact support.")
+        return
+      }
+
+      console.log("Employee record created successfully")
+      router.push("/dashboard/employee")
     } catch (error: any) {
       console.error("Login error:", error)
-      setError(error.message || "An error occurred during login")
+      setError(error.message || "An unexpected error occurred")
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md mx-auto">
       <CardHeader>
         <CardTitle>Sign In</CardTitle>
+        <CardDescription>Enter your credentials to access your account</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {message && (
-            <Alert>
-              <AlertDescription>{message}</AlertDescription>
-            </Alert>
-          )}
-
+        <form onSubmit={handleLogin} className="space-y-4">
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
@@ -95,8 +116,8 @@ export function LoginForm() {
             <Input
               id="email"
               type="email"
-              value={formData.email}
-              onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
               disabled={loading}
             />
@@ -107,29 +128,16 @@ export function LoginForm() {
             <Input
               id="password"
               type="password"
-              value={formData.password}
-              onChange={(e) => setFormData((prev) => ({ ...prev, password: e.target.value }))}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               required
               disabled={loading}
             />
           </div>
 
-          <div className="text-right">
-            <Link href="/auth/forgot-password" className="text-sm hover:underline">
-              Forgot your password?
-            </Link>
-          </div>
-
           <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Signing In..." : "Sign In"}
+            {loading ? "Signing in..." : "Sign In"}
           </Button>
-
-          <div className="text-center text-sm text-muted-foreground">
-            Don't have an account?{" "}
-            <Link href="/auth/signup" className="hover:underline">
-              Sign up
-            </Link>
-          </div>
         </form>
       </CardContent>
     </Card>
