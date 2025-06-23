@@ -2,149 +2,152 @@
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Clock, Eye, Users, FolderOpen, TrendingUp, RefreshCw } from "lucide-react"
-import { EmployeeTimeDetailsModal } from "./employee-time-details-modal"
-import type { Employee, Project } from "@/lib/types"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Clock, Users, RefreshCw, Eye, TrendingUp } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface TimeTrackingProps {
   organizationId: string
 }
 
 interface EmployeeTimeData {
-  employee: Employee
-  project?: Project
-  hoursAllTime: number
-  hoursLastWeek: number
-  hoursToday: number
-  totalEntries: number
+  id: string
+  name: string
+  email: string
+  status: "Active" | "Inactive"
+  currentTask: string | null
+  currentProject: string | null
+  totalAllTime: number
+  totalLastWeek: number
+  totalToday: number
+  currentActiveSeconds: number
+  activeEntries: number
 }
 
-interface EmployeeProjectRelationship {
-  employeeId: string
-  projectId: string
-  projectName: string
+interface TimeTrackingSummary {
+  totalEmployees: number
+  activeEmployees: number
+  totalHoursToday: number
+  totalHoursWeek: number
+  totalHoursAllTime: number
 }
 
 export function TimeTracking({ organizationId }: TimeTrackingProps) {
-  const [employeeTimeData, setEmployeeTimeData] = useState<EmployeeTimeData[]>([])
-  const [employees, setEmployees] = useState<Employee[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
-  const [employeeProjectRelationships, setEmployeeProjectRelationships] = useState<EmployeeProjectRelationship[]>([])
-  const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([])
-  const [filteredProjects, setFilteredProjects] = useState<Project[]>([])
-  const [loading, setLoading] = useState(true)
+  const [employeeData, setEmployeeData] = useState<EmployeeTimeData[]>([])
+  const [summary, setSummary] = useState<TimeTrackingSummary>({
+    totalEmployees: 0,
+    activeEmployees: 0,
+    totalHoursToday: 0,
+    totalHoursWeek: 0,
+    totalHoursAllTime: 0,
+  })
   const [selectedEmployee, setSelectedEmployee] = useState<string>("all")
   const [selectedProject, setSelectedProject] = useState<string>("all")
-  const [selectedEmployeeForModal, setSelectedEmployeeForModal] = useState<Employee | null>(null)
-  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [projects, setProjects] = useState<any[]>([])
+  const supabase = createClient()
 
+  // Auto-refresh every 30 seconds
   useEffect(() => {
-    fetchData()
+    const interval = setInterval(() => {
+      refreshData(false) // Silent refresh
+    }, 30000)
+
+    return () => clearInterval(interval)
   }, [organizationId])
 
   useEffect(() => {
-    applySmartFiltering()
-  }, [selectedEmployee, selectedProject, employees, projects, employeeProjectRelationships])
+    fetchProjects()
+    refreshData()
+  }, [organizationId])
 
-  const fetchData = async () => {
+  const fetchProjects = async () => {
     try {
-      setLoading(true)
+      const { data } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("organization_id", organizationId)
+        .eq("is_active", true)
 
-      const response = await fetch(`/api/time-tracking/summary?organization_id=${organizationId}`)
-      const data = await response.json()
-
-      if (data.employeeTimeData) setEmployeeTimeData(data.employeeTimeData)
-      if (data.employees) setEmployees(data.employees)
-      if (data.projects) setProjects(data.projects)
-      if (data.employeeProjectRelationships) setEmployeeProjectRelationships(data.employeeProjectRelationships)
+      setProjects(data || [])
     } catch (error) {
-      console.error("Error fetching data:", error)
+      console.error("Error fetching projects:", error)
+    }
+  }
+
+  const refreshData = async (showToast = true) => {
+    try {
+      if (showToast) setRefreshing(true)
+
+      const response = await fetch("/api/time-tracking/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organization_id: organizationId }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to refresh data")
+      }
+
+      const data = await response.json()
+      setEmployeeData(data.employees || [])
+      setSummary(
+        data.summary || {
+          totalEmployees: 0,
+          activeEmployees: 0,
+          totalHoursToday: 0,
+          totalHoursWeek: 0,
+          totalHoursAllTime: 0,
+        },
+      )
+
+      if (showToast) {
+        toast.success("Time tracking data refreshed")
+      }
+    } catch (error) {
+      console.error("Error refreshing data:", error)
+      if (showToast) {
+        toast.error("Failed to refresh data")
+      }
     } finally {
+      setRefreshing(false)
       setLoading(false)
     }
   }
 
-  const applySmartFiltering = () => {
-    let newFilteredEmployees = [...employees]
-    let newFilteredProjects = [...projects]
+  const formatDuration = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
 
-    if (selectedProject !== "all") {
-      // Filter employees who are assigned to tasks in the selected project
-      const projectEmployeeIds = employeeProjectRelationships
-        .filter((rel) => rel.projectId === selectedProject)
-        .map((rel) => rel.employeeId)
-
-      newFilteredEmployees = employees.filter((emp) => projectEmployeeIds.includes(emp.id))
+    if (hours > 0 && minutes > 0) {
+      return `${hours}h ${minutes}m`
+    } else if (hours > 0) {
+      return `${hours}h`
+    } else if (minutes > 0) {
+      return `${minutes}m`
+    } else {
+      return "0m"
     }
-
-    if (selectedEmployee !== "all") {
-      // Filter projects that the selected employee is assigned to (through tasks)
-      const employeeProjectIds = employeeProjectRelationships
-        .filter((rel) => rel.employeeId === selectedEmployee)
-        .map((rel) => rel.projectId)
-
-      newFilteredProjects = projects.filter((proj) => employeeProjectIds.includes(proj.id))
-    }
-
-    setFilteredEmployees(newFilteredEmployees)
-    setFilteredProjects(newFilteredProjects)
   }
 
-  const getFilteredTimeData = () => {
-    let filtered = employeeTimeData
-
-    if (selectedEmployee !== "all") {
-      filtered = filtered.filter((data) => data.employee.id === selectedEmployee)
-    }
-
-    if (selectedProject !== "all") {
-      filtered = filtered.filter((data) => data.project?.id === selectedProject)
-    }
-
-    return filtered
-  }
-
-  const getTotalHours = (type: "allTime" | "lastWeek" | "today") => {
-    const filtered = getFilteredTimeData()
-    return filtered.reduce((total, data) => {
-      switch (type) {
-        case "allTime":
-          return total + data.hoursAllTime
-        case "lastWeek":
-          return total + data.hoursLastWeek
-        case "today":
-          return total + data.hoursToday
-        default:
-          return total
-      }
-    }, 0)
-  }
-
-  const formatHours = (hours: number) => {
+  const formatDecimalHours = (seconds: number): string => {
+    const hours = seconds / 3600
     return `${hours.toFixed(1)}h`
   }
 
-  const handleViewDetails = (employee: Employee) => {
-    setSelectedEmployeeForModal(employee)
-    setIsModalOpen(true)
-  }
-
-  const handleEmployeeChange = (value: string) => {
-    setSelectedEmployee(value)
-    if (value !== "all") {
-      setSelectedProject("all") // Reset project filter when employee is selected
-    }
-  }
-
-  const handleProjectChange = (value: string) => {
-    setSelectedProject(value)
-    if (value !== "all") {
-      setSelectedEmployee("all") // Reset employee filter when project is selected
-    }
+  const getFilteredEmployees = () => {
+    return employeeData.filter((emp) => {
+      const employeeMatch = selectedEmployee === "all" || emp.id === selectedEmployee
+      const projectMatch =
+        selectedProject === "all" || emp.currentProject === projects.find((p) => p.id === selectedProject)?.name
+      return employeeMatch && projectMatch
+    })
   }
 
   const clearFilters = () => {
@@ -154,30 +157,36 @@ export function TimeTracking({ organizationId }: TimeTrackingProps) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-8">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 text-gray-400 mx-auto mb-2 animate-spin" />
-          <p className="text-gray-500">Loading time tracking data...</p>
-        </div>
+      <div className="flex justify-center items-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
       </div>
     )
   }
 
-  const filteredTimeData = getFilteredTimeData()
-
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Hours Today</CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => refreshData()}
+                disabled={refreshing}
+                className="h-6 w-6 p-0"
+              >
+                <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatHours(getTotalHours("today"))}</div>
+            <div className="text-2xl font-bold">{formatDecimalHours(summary.totalHoursToday)}</div>
             <p className="text-xs text-muted-foreground">
-              {filteredTimeData.filter((d) => d.hoursToday > 0).length} employees active today
+              {summary.activeEmployees} employee{summary.activeEmployees !== 1 ? "s" : ""} active today
             </p>
           </CardContent>
         </Card>
@@ -185,12 +194,23 @@ export function TimeTracking({ organizationId }: TimeTrackingProps) {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Hours Last Week</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => refreshData()}
+                disabled={refreshing}
+                className="h-6 w-6 p-0"
+              >
+                <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatHours(getTotalHours("lastWeek"))}</div>
+            <div className="text-2xl font-bold">{formatDecimalHours(summary.totalHoursWeek)}</div>
             <p className="text-xs text-muted-foreground">
-              {filteredTimeData.filter((d) => d.hoursLastWeek > 0).length} employees active last week
+              {summary.totalEmployees} employee{summary.totalEmployees !== 1 ? "s" : ""} active last week
             </p>
           </CardContent>
         </Card>
@@ -198,26 +218,44 @@ export function TimeTracking({ organizationId }: TimeTrackingProps) {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Hours All Time</CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => refreshData()}
+                disabled={refreshing}
+                className="h-6 w-6 p-0"
+              >
+                <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatHours(getTotalHours("allTime"))}</div>
-            <p className="text-xs text-muted-foreground">
-              {filteredTimeData.reduce((sum, d) => sum + d.totalEntries, 0)} total entries
-            </p>
+            <div className="text-2xl font-bold">{formatDecimalHours(summary.totalHoursAllTime)}</div>
+            <p className="text-xs text-muted-foreground">{summary.totalEmployees} total entries</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Active Employees</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => refreshData()}
+                disabled={refreshing}
+                className="h-6 w-6 p-0"
+              >
+                <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{filteredTimeData.length}</div>
-            <p className="text-xs text-muted-foreground">
-              {filteredTimeData.filter((d) => d.hoursAllTime > 0).length} with logged hours
-            </p>
+            <div className="text-2xl font-bold">{summary.activeEmployees}</div>
+            <p className="text-xs text-muted-foreground">{summary.activeEmployees} with logged hours</p>
           </CardContent>
         </Card>
       </div>
@@ -231,171 +269,147 @@ export function TimeTracking({ organizationId }: TimeTrackingProps) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Employee</label>
-              <Select value={selectedEmployee} onValueChange={handleEmployeeChange}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="text-sm font-medium mb-2 block">Employee</label>
+              <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
                 <SelectTrigger>
                   <SelectValue placeholder="All employees" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All employees</SelectItem>
-                  {filteredEmployees.map((employee) => (
-                    <SelectItem key={employee.id} value={employee.id}>
-                      {employee.first_name} {employee.last_name}
+                  {employeeData.map((emp) => (
+                    <SelectItem key={emp.id} value={emp.id}>
+                      {emp.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {selectedProject !== "all" && (
-                <p className="text-xs text-blue-600">Showing employees assigned to selected project</p>
-              )}
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Project</label>
-              <Select value={selectedProject} onValueChange={handleProjectChange}>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Project</label>
+              <Select value={selectedProject} onValueChange={setSelectedProject}>
                 <SelectTrigger>
                   <SelectValue placeholder="All projects" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All projects</SelectItem>
-                  {filteredProjects.map((project) => (
+                  {projects.map((project) => (
                     <SelectItem key={project.id} value={project.id}>
                       {project.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {selectedEmployee !== "all" && (
-                <p className="text-xs text-blue-600">Showing projects assigned to selected employee</p>
-              )}
             </div>
           </div>
 
-          <div className="flex gap-2 mt-4">
+          <div className="flex gap-2">
             <Button variant="outline" onClick={clearFilters}>
               Clear Filters
             </Button>
-            <Button onClick={fetchData}>
-              <RefreshCw className="w-4 h-4 mr-2" />
+            <Button onClick={() => refreshData()} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
               Refresh Data
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Employee Time Entries List */}
+      {/* Employee Time Entries */}
       <Card>
         <CardHeader>
           <CardTitle>Employee Time Entries</CardTitle>
           <CardDescription>
-            {selectedEmployee !== "all" || selectedProject !== "all"
-              ? `Filtered results (${filteredTimeData.length} employee-project combinations)`
-              : `All employee time entries (${filteredTimeData.length} employee-project combinations)`}
+            All employee time entries ({getFilteredEmployees().length} employee-project combinations)
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {filteredTimeData.length === 0 ? (
-            <div className="text-center py-12">
-              <Clock className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No time entries found</h3>
-              <p className="text-gray-500 mb-4">
-                {selectedEmployee !== "all" || selectedProject !== "all"
-                  ? "No time entries match the selected filters."
-                  : "No employees have logged time yet."}
-              </p>
-              {(selectedEmployee !== "all" || selectedProject !== "all") && (
-                <Button variant="outline" onClick={clearFilters}>
-                  Clear Filters
-                </Button>
-              )}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="min-w-[200px]">Employee</TableHead>
-                    <TableHead className="min-w-[150px]">Project</TableHead>
-                    <TableHead className="text-right">All Time</TableHead>
-                    <TableHead className="text-right">Last Week</TableHead>
-                    <TableHead className="text-right">Today</TableHead>
-                    <TableHead className="text-center">Status</TableHead>
-                    <TableHead className="text-center">Actions</TableHead>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Employee</TableHead>
+                <TableHead>Project</TableHead>
+                <TableHead>All Time</TableHead>
+                <TableHead>Last Week</TableHead>
+                <TableHead>Today</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {getFilteredEmployees().map((employee) => {
+                const initials = employee.name
+                  .split(" ")
+                  .map((n) => n[0])
+                  .join("")
+                  .toUpperCase()
+
+                return (
+                  <TableRow key={employee.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <div className="font-medium">{employee.name}</div>
+                          <div className="text-sm text-muted-foreground">{employee.email}</div>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                        {employee.currentProject || "No active project"}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{formatDecimalHours(employee.totalAllTime)}</div>
+                      <div className="text-sm text-muted-foreground">{employee.activeEntries} entries</div>
+                    </TableCell>
+                    <TableCell>{formatDecimalHours(employee.totalLastWeek)}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{formatDecimalHours(employee.totalToday)}</span>
+                        {employee.status === "Active" && (
+                          <Badge variant="secondary" className="bg-green-100 text-green-800">
+                            Active today
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={employee.status === "Active" ? "default" : "secondary"}
+                        className={employee.status === "Active" ? "bg-green-100 text-green-800" : ""}
+                      >
+                        {employee.status}
+                      </Badge>
+                      {employee.currentTask && (
+                        <div className="text-xs text-muted-foreground mt-1">Working on: {employee.currentTask}</div>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Button variant="outline" size="sm">
+                        <Eye className="h-4 w-4 mr-2" />
+                        View Details
+                      </Button>
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredTimeData.map((data, index) => (
-                    <TableRow key={`${data.employee.id}-${data.project?.id || "no-project"}-${index}`}>
-                      <TableCell>
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
-                            <span className="text-sm font-medium text-white">
-                              {data.employee.first_name[0]}
-                              {data.employee.last_name[0]}
-                            </span>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="font-medium text-gray-900">
-                              {data.employee.first_name} {data.employee.last_name}
-                            </div>
-                            <div className="text-sm text-gray-500 truncate">{data.employee.email}</div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center space-x-2">
-                          <FolderOpen className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                          <span className="font-medium">{data.project?.name || "No Project Assigned"}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="font-bold text-lg">{formatHours(data.hoursAllTime)}</div>
-                        <div className="text-xs text-gray-500">{data.totalEntries} entries</div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="font-medium">{formatHours(data.hoursLastWeek)}</div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="font-medium">{formatHours(data.hoursToday)}</div>
-                        {data.hoursToday > 0 && <div className="text-xs text-green-600">Active today</div>}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge variant={data.employee.is_active ? "default" : "secondary"}>
-                          {data.employee.is_active ? "Active" : "Inactive"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleViewDetails(data.employee)}
-                          className="hover:bg-blue-50 hover:border-blue-300"
-                        >
-                          <Eye className="w-4 h-4 mr-1" />
-                          View Details
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                )
+              })}
+            </TableBody>
+          </Table>
+
+          {getFilteredEmployees().length === 0 && (
+            <div className="text-center py-8 text-muted-foreground">
+              No employee time entries found matching the current filters.
             </div>
           )}
         </CardContent>
       </Card>
-
-      {/* Employee Time Details Modal */}
-      <EmployeeTimeDetailsModal
-        employee={selectedEmployeeForModal}
-        organizationId={organizationId}
-        isOpen={isModalOpen}
-        onClose={() => {
-          setIsModalOpen(false)
-          setSelectedEmployeeForModal(null)
-        }}
-      />
     </div>
   )
 }
