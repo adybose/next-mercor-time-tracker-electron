@@ -149,6 +149,16 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         totalSeconds += taskTotal
       })
 
+      // Add currently running time
+      activeEntries?.forEach((entry) => {
+        if (entry.is_active && entry.status === "running") {
+          const startTime = new Date(entry.start_time).getTime()
+          const currentTime = Date.now()
+          const elapsedSeconds = Math.floor((currentTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
+          totalSeconds += Math.max(0, elapsedSeconds)
+        }
+      })
+
       const assignedTasks = tasksData?.filter((task) => task.status !== "Completed").length || 0
       const completedTasks = tasksData?.filter((task) => task.status === "Completed").length || 0
 
@@ -545,6 +555,67 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     }
   }
 
+  const refreshTotalHours = async () => {
+    try {
+      // Calculate total including current running time
+      let totalSeconds = 0
+
+      // Add completed time from all tasks
+      tasks.forEach((task) => {
+        const taskEntries = task.time_entries || []
+        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
+          return sum + (entry.duration_seconds || 0)
+        }, 0)
+        totalSeconds += taskTotal
+      })
+
+      // Add currently running time
+      activeTimeEntries.forEach((entry, taskId) => {
+        if (entry.is_active && entry.status === "running") {
+          const currentTimer = timers.get(taskId) || 0
+          totalSeconds += currentTimer
+        }
+      })
+
+      setStats((prev) => ({
+        ...prev,
+        totalHoursLogged: totalSeconds,
+      }))
+
+      toast.success("Total hours refreshed")
+    } catch (error) {
+      console.error("Error refreshing total hours:", error)
+      toast.error("Failed to refresh total hours")
+    }
+  }
+
+  useEffect(() => {
+    // Update total hours when timers change
+    let totalSeconds = 0
+
+    // Add completed time from all tasks
+    tasks.forEach((task) => {
+      const taskEntries = task.time_entries || []
+      const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
+        return sum + (entry.duration_seconds || 0)
+      }, 0)
+      totalSeconds += taskTotal
+    })
+
+    // Add currently running time
+    activeTimeEntries.forEach((entry, taskId) => {
+      if (entry.is_active && entry.status === "running") {
+        const currentTimer = timers.get(taskId) || 0
+        totalSeconds += currentTimer
+      }
+    })
+
+    setStats((prev) => ({
+      ...prev,
+      totalHoursLogged: totalSeconds,
+    }))
+  }, [timers, tasks, activeTimeEntries])
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -586,11 +657,16 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Total Hours Logged</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
+              <div className="flex items-center gap-2">
+                <Button onClick={refreshTotalHours} size="sm" variant="ghost" className="h-6 w-6 p-0">
+                  <RefreshCw className="h-3 w-3" />
+                </Button>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{formatDuration(stats.totalHoursLogged)}</div>
-              <p className="text-xs text-muted-foreground">All time</p>
+              <p className="text-xs text-muted-foreground">All time (including current)</p>
             </CardContent>
           </Card>
 
