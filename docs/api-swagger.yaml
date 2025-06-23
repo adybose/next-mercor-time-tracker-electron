@@ -1,0 +1,1046 @@
+openapi: 3.0.0
+info:
+  title: Time Tracker API
+  description: API documentation for the Time Tracker application
+  version: 1.0.0
+  contact:
+    name: Time Tracker API
+    email: support@timetracker.com
+
+servers:
+  - url: https://your-app.vercel.app
+    description: Production server
+  - url: http://localhost:3000
+    description: Development server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase JWT token obtained from authentication
+
+  schemas:
+    Employee:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        is_active:
+          type: boolean
+        email_verified:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        employee_id:
+          type: string
+          format: uuid
+        task_name:
+          type: string
+        task_description:
+          type: string
+        status:
+          type: string
+          enum: [Open, Assigned, In Progress, Completed]
+        time_spent:
+          type: integer
+          description: Time spent in seconds
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TimeEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        employee_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        current_duration_seconds:
+          type: integer
+        total_paused_seconds:
+          type: integer
+        status:
+          type: string
+          enum: [running, paused, completed]
+        is_active:
+          type: boolean
+        description:
+          type: string
+        ip_address:
+          type: string
+        mac_address:
+          type: string
+
+    Screenshot:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        time_entry_id:
+          type: string
+          format: uuid
+        employee_id:
+          type: string
+          format: uuid
+        file_url:
+          type: string
+        taken_at:
+          type: string
+          format: date-time
+        has_permissions:
+          type: boolean
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+security:
+  - BearerAuth: []
+
+paths:
+  # Authentication APIs
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Authentication
+      summary: Send password reset email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+              required:
+                - email
+      responses:
+        '200':
+          description: Password reset email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Employee APIs
+  /api/employees:
+    get:
+      tags:
+        - Employees
+      summary: Get employees for organization
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of employees
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employees:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Employee'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Employees
+      summary: Create new employee
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  format: uuid
+                email:
+                  type: string
+                  format: email
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+              required:
+                - organization_id
+                - email
+                - first_name
+                - last_name
+      responses:
+        '201':
+          description: Employee created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+                  message:
+                    type: string
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/employees/{id}:
+    get:
+      tags:
+        - Employees
+      summary: Get employee by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Employee details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Employees
+      summary: Update employee
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Employee updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Employees
+      summary: Soft delete employee
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Employee deactivated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/Employee'
+        '404':
+          description: Employee not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Project APIs
+  /api/projects:
+    get:
+      tags:
+        - Projects
+      summary: Get projects for organization
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Project'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Projects
+      summary: Create new project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                description:
+                  type: string
+              required:
+                - organization_id
+                - name
+      responses:
+        '201':
+          description: Project created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/projects/{id}:
+    get:
+      tags:
+        - Projects
+      summary: Get project by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Projects
+      summary: Update project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Project updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    $ref: '#/components/schemas/Project'
+        '404':
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Task APIs
+  /api/tasks:
+    get:
+      tags:
+        - Tasks
+      summary: Get tasks
+      parameters:
+        - name: project_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: employee_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Tasks
+      summary: Create new task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id:
+                  type: string
+                  format: uuid
+                task_name:
+                  type: string
+                task_description:
+                  type: string
+                employee_id:
+                  type: string
+                  format: uuid
+              required:
+                - project_id
+                - task_name
+      responses:
+        '201':
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/Task'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Tasks
+      summary: Update task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                employee_id:
+                  type: string
+                  format: uuid
+                status:
+                  type: string
+                  enum: [Open, Assigned, In Progress, Completed]
+                task_name:
+                  type: string
+                task_description:
+                  type: string
+              required:
+                - id
+      responses:
+        '200':
+          description: Task updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/Task'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Time Tracking APIs
+  /api/time-tracking/start:
+    post:
+      tags:
+        - Time Tracking
+      summary: Start time tracking for a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  format: uuid
+                description:
+                  type: string
+                ip_address:
+                  type: string
+                mac_address:
+                  type: string
+              required:
+                - task_id
+      responses:
+        '200':
+          description: Time tracking started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  time_entry:
+                    $ref: '#/components/schemas/TimeEntry'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/pause:
+    post:
+      tags:
+        - Time Tracking
+      summary: Pause time tracking for a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  format: uuid
+              required:
+                - task_id
+      responses:
+        '200':
+          description: Time tracking paused successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/resume:
+    post:
+      tags:
+        - Time Tracking
+      summary: Resume time tracking for a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  format: uuid
+                ip_address:
+                  type: string
+                mac_address:
+                  type: string
+              required:
+                - task_id
+      responses:
+        '200':
+          description: Time tracking resumed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  total_paused_seconds:
+                    type: integer
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/complete:
+    post:
+      tags:
+        - Time Tracking
+      summary: Complete time tracking for a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  format: uuid
+              required:
+                - task_id
+      responses:
+        '200':
+          description: Task completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  duration_seconds:
+                    type: integer
+                  hours:
+                    type: number
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/status:
+    get:
+      tags:
+        - Time Tracking
+      summary: Get time tracking status
+      parameters:
+        - name: task_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: employee_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Time tracking status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  time_entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TimeEntry'
+                  employee_status:
+                    type: string
+                    enum: [online, offline]
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/summary:
+    get:
+      tags:
+        - Time Tracking
+      summary: Get time tracking summary for organization
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Time tracking summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employeeTimeData:
+                    type: array
+                    items:
+                      type: object
+                  employees:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Employee'
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Project'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/time-tracking/refresh:
+    post:
+      tags:
+        - Time Tracking
+      summary: Refresh time tracking data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  format: uuid
+              required:
+                - organization_id
+      responses:
+        '200':
+          description: Data refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  employees:
+                    type: array
+                  summary:
+                    type: object
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Screenshot APIs
+  /api/screenshots:
+    get:
+      tags:
+        - Screenshots
+      summary: Get screenshots
+      parameters:
+        - name: employee_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: time_entry_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: List of screenshots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  screenshots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Screenshot'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Screenshots
+      summary: Upload screenshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                time_entry_id:
+                  type: string
+                  format: uuid
+                file_url:
+                  type: string
+                has_permissions:
+                  type: boolean
+                  default: true
+              required:
+                - time_entry_id
+                - file_url
+      responses:
+        '200':
+          description: Screenshot uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  screenshot:
+                    $ref: '#/components/schemas/Screenshot'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Validation APIs
+  /api/validate-email:
+    post:
+      tags:
+        - Validation
+      summary: Validate email availability
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                context:
+                  type: string
+                  enum: [organization_signup, employee_invite]
+              required:
+                - email
+                - context
+      responses:
+        '200':
+          description: Email validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                  error:
+                    type: string
+                  userType:
+                    type: string
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
