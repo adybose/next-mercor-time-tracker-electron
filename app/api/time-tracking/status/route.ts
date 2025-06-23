@@ -16,7 +16,6 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const taskId = searchParams.get("task_id")
-    const employeeId = searchParams.get("employee_id")
 
     // Get employee info
     const { data: employee, error: employeeError } = await supabase
@@ -46,12 +45,13 @@ export async function GET(request: NextRequest) {
 
     if (error) throw error
 
-    // Calculate current time for active entries
+    // Calculate current time for active entries and preserve accumulated time
     const enrichedEntries = timeEntries?.map((entry) => {
-      let currentDurationSeconds = entry.duration_seconds || 0
+      let displayDurationSeconds = entry.duration_seconds || 0
+      let currentDurationSeconds = entry.current_duration_seconds || 0
       let displayStatus = entry.status
 
-      if (entry.is_active && (entry.status === "running" || entry.status === "paused")) {
+      if (entry.is_active) {
         const startTime = new Date(entry.start_time).getTime()
         const currentTime = Date.now()
         const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
@@ -59,18 +59,25 @@ export async function GET(request: NextRequest) {
         if (entry.status === "running") {
           // Currently running - calculate live time
           currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
+          displayDurationSeconds = currentDurationSeconds
           displayStatus = "running"
-        } else if (entry.status === "paused" && entry.pause_start_time) {
-          // Currently paused - calculate time up to pause
-          const pauseTime = new Date(entry.pause_start_time).getTime()
-          currentDurationSeconds = Math.floor((pauseTime - startTime - totalPausedMs) / 1000)
+        } else if (entry.status === "paused") {
+          // Currently paused - use stored current_duration_seconds
+          displayDurationSeconds = entry.current_duration_seconds || 0
+          currentDurationSeconds = displayDurationSeconds
           displayStatus = "paused"
         }
+      } else if (entry.status === "completed") {
+        // Completed - use final duration
+        displayDurationSeconds = entry.duration_seconds || 0
+        currentDurationSeconds = displayDurationSeconds
+        displayStatus = "completed"
       }
 
       return {
         ...entry,
         current_duration_seconds: Math.max(0, currentDurationSeconds),
+        display_duration_seconds: Math.max(0, displayDurationSeconds),
         display_status: displayStatus,
         is_currently_active: entry.is_active && entry.status === "running",
         is_currently_paused: entry.is_active && entry.status === "paused",

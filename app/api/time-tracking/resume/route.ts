@@ -14,8 +14,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const body = await request.json()
-    const { task_id, ip_address, mac_address } = body
+    const { task_id, ip_address, mac_address } = await request.json()
 
     if (!task_id) {
       return NextResponse.json({ error: "Task ID is required" }, { status: 400 })
@@ -32,52 +31,66 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Employee not found" }, { status: 404 })
     }
 
-    // Get the paused time entry
-    const { data: timeEntry, error: timeEntryError } = await supabase
+    // Find the paused time entry for this task
+    const { data: pausedEntry, error: entryError } = await supabase
       .from("time_entries")
       .select("*")
       .eq("task_id", task_id)
       .eq("employee_id", employee.id)
+      .eq("is_active", true)
       .eq("status", "paused")
-      .order("created_at", { ascending: false })
-      .limit(1)
       .single()
 
-    if (timeEntryError || !timeEntry) {
+    if (entryError || !pausedEntry) {
       return NextResponse.json({ error: "No paused time entry found for this task" }, { status: 404 })
     }
 
-    // Calculate paused duration and add to total
-    const currentTime = new Date()
-    const pauseTime = new Date(timeEntry.last_pause_time!)
-    const pausedSeconds = Math.floor((currentTime.getTime() - pauseTime.getTime()) / 1000)
-    const newTotalPausedSeconds = (timeEntry.total_paused_seconds || 0) + pausedSeconds
+    // Calculate total paused time
+    const pauseStartTime = new Date(pausedEntry.pause_start_time).getTime()
+    const resumeTime = Date.now()
+    const pauseDurationMs = resumeTime - pauseStartTime
+    const pauseDurationSeconds = Math.floor(pauseDurationMs / 1000)
+    const newTotalPausedSeconds = (pausedEntry.total_paused_seconds || 0) + pauseDurationSeconds
 
-    // Update time entry to active state
+    // Resume the time entry
     const { error: updateError } = await supabase
       .from("time_entries")
       .update({
-        is_active: true,
         status: "running",
+        pause_start_time: null,
         total_paused_seconds: newTotalPausedSeconds,
-        last_pause_time: null,
-        ip_address: ip_address || timeEntry.ip_address,
-        mac_address: mac_address || timeEntry.mac_address,
-        updated_at: currentTime.toISOString(),
+        resume_time: new Date().toISOString(),
+        ip_address: ip_address || pausedEntry.ip_address,
+        mac_address: mac_address || pausedEntry.mac_address,
+        updated_at: new Date().toISOString(),
       })
-      .eq("id", timeEntry.id)
+      .eq("id", pausedEntry.id)
 
     if (updateError) {
       console.error("Error updating time entry:", updateError)
       return NextResponse.json({ error: "Failed to resume time tracking" }, { status: 500 })
     }
 
+    // Update task status to "In Progress"
+    const { error: taskUpdateError } = await supabase
+      .from("tasks")
+      .update({
+        status: "In Progress",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", task_id)
+
+    if (taskUpdateError) {
+      console.error("Error updating task:", taskUpdateError)
+    }
+
     return NextResponse.json({
       message: "Time tracking resumed successfully",
+      entry_id: pausedEntry.id,
       total_paused_seconds: newTotalPausedSeconds,
     })
   } catch (error) {
-    console.error("Error in resume time tracking:", error)
+    console.error("Error resuming time tracking:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

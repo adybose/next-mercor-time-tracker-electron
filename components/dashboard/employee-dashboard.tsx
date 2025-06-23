@@ -27,7 +27,7 @@ interface DashboardStats {
 interface TaskWithProject extends Task {
   projects?: Project
   time_entries?: TimeEntry[]
-  currentTimeEntry?: TimeEntry
+  currentTimeEntry?: any
 }
 
 export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
@@ -41,7 +41,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const [tasks, setTasks] = useState<TaskWithProject[]>([])
   const [filteredTasks, setFilteredTasks] = useState<TaskWithProject[]>([])
   const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [activeTimeEntries, setActiveTimeEntries] = useState<Map<string, TimeEntry>>(new Map())
+  const [activeTimeEntries, setActiveTimeEntries] = useState<Map<string, any>>(new Map())
   const [timers, setTimers] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<Map<string, boolean>>(new Map())
@@ -49,46 +49,23 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const router = useRouter()
   const supabase = createClient()
 
-  // Background update effect - updates time spent every 30 seconds
-  useEffect(() => {
-    const backgroundUpdate = setInterval(async () => {
-      if (activeTimeEntries.size > 0) {
-        try {
-          await fetch("/api/time-tracking/update-background", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ employee_id: employee.id }),
-          })
-        } catch (error) {
-          console.error("Background update error:", error)
-        }
-      }
-    }, 30000) // Update every 30 seconds
-
-    return () => clearInterval(backgroundUpdate)
-  }, [activeTimeEntries, employee.id])
-
-  // Timer update effect - updates UI every second
+  // Timer update effect - updates UI every second for running tasks only
   useEffect(() => {
     const interval = setInterval(() => {
       setTimers((prev) => {
         const newTimers = new Map(prev)
         activeTimeEntries.forEach((entry, taskId) => {
-          const startTime = new Date(entry.start_time).getTime()
-          const currentTime = Date.now()
-          const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
-
-          let currentDurationSeconds = 0
-          if (entry.status === "running" && entry.is_active) {
-            // Currently running
-            currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
-          } else if (entry.status === "paused" && entry.pause_start_time) {
-            // Currently paused - show time up to pause
-            const pauseTime = new Date(entry.pause_start_time).getTime()
-            currentDurationSeconds = Math.floor((pauseTime - startTime - totalPausedMs) / 1000)
+          if (entry.is_currently_active) {
+            // Only update running tasks
+            const startTime = new Date(entry.start_time).getTime()
+            const currentTime = Date.now()
+            const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
+            const currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
+            newTimers.set(taskId, Math.max(0, currentDurationSeconds))
+          } else if (entry.is_currently_paused) {
+            // For paused tasks, use the stored duration
+            newTimers.set(taskId, entry.display_duration_seconds || 0)
           }
-
-          newTimers.set(taskId, Math.max(0, currentDurationSeconds))
         })
         return newTimers
       })
@@ -101,19 +78,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     try {
       setLoading(true)
 
-      // Use the refresh API to get accurate data
-      const response = await fetch("/api/time-tracking/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employee_id: employee.id }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch dashboard data")
-      }
-
-      const data = await response.json()
-
       // Fetch organization name
       const { data: orgData, error: orgError } = await supabase
         .from("organizations")
@@ -125,26 +89,72 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         console.error("Organization fetch error:", orgError)
       }
 
-      // Set stats from API response
-      const assignedTasks = data.tasks?.filter((task: any) => task.status !== "Completed").length || 0
-      const completedTasks = data.tasks?.filter((task: any) => task.status === "Completed").length || 0
-      const uniqueProjects = new Set(data.tasks?.map((task: any) => task.project_id))
+      // Fetch tasks with time entries
+      const { data: tasksData, error: tasksError } = await supabase
+        .from("tasks")
+        .select(`
+          *,
+          projects!inner(id, name),
+          time_entries(*)
+        `)
+        .eq("employee_id", employee.id)
+        .eq("is_active", true)
+
+      if (tasksError) {
+        console.error("Tasks fetch error:", tasksError)
+      }
+
+      // Get time tracking status
+      const statusResponse = await fetch("/api/time-tracking/status")
+      const statusData = await statusResponse.json()
+
+      // Calculate total time logged including current active time
+      let totalSeconds = 0
+
+      // Add completed time from all tasks
+      tasksData?.forEach((task) => {
+        const taskEntries = task.time_entries || []
+        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
+          if (entry.status === "completed" && entry.duration_seconds) {
+            return sum + entry.duration_seconds
+          }
+          return sum
+        }, 0)
+        totalSeconds += taskTotal
+      })
+
+      // Add current active/paused time from status API
+      statusData.time_entries?.forEach((entry: any) => {
+        if (entry.is_active) {
+          totalSeconds += entry.display_duration_seconds || 0
+        }
+      })
+
+      const assignedTasks = tasksData?.filter((task) => task.status !== "Completed").length || 0
+      const completedTasks = tasksData?.filter((task) => task.status === "Completed").length || 0
+      const uniqueProjects = new Set(tasksData?.map((task) => task.project_id))
 
       setStats({
-        totalHoursLogged: data.employee.totalHoursLogged || 0,
+        totalHoursLogged: totalSeconds,
         activeProjects: uniqueProjects.size,
         assignedTasks,
         completedTasks,
         organizationName: orgData?.name || orgData?.company_name || "Unknown Organization",
       })
 
-      setTasks(data.tasks || [])
+      setTasks(tasksData || [])
 
-      // Set active time entries
-      const entriesMap = new Map<string, TimeEntry>()
-      data.tasks?.forEach((task: any) => {
-        if (task.currentTimeEntry) {
-          entriesMap.set(task.id, task.currentTimeEntry)
+      // Set active time entries from status API
+      const entriesMap = new Map<string, any>()
+      statusData.time_entries?.forEach((entry: any) => {
+        if (entry.is_active) {
+          entriesMap.set(entry.task_id, entry)
+          // Initialize timer with current duration
+          setTimers((prev) => {
+            const newTimers = new Map(prev)
+            newTimers.set(entry.task_id, entry.display_duration_seconds || 0)
+            return newTimers
+          })
         }
       })
       setActiveTimeEntries(entriesMap)
@@ -248,7 +258,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to start task")
       }
 
-      await fetchDashboardData() // Refresh data
+      await fetchDashboardData()
       toast.success("Task started successfully")
     } catch (error) {
       console.error("Error starting task:", error)
@@ -272,7 +282,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to pause task")
       }
 
-      await fetchDashboardData() // Refresh data
+      await fetchDashboardData()
       toast.success("Task paused")
     } catch (error) {
       console.error("Error pausing task:", error)
@@ -300,7 +310,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to resume task")
       }
 
-      await fetchDashboardData() // Refresh data
+      await fetchDashboardData()
       toast.success("Task resumed")
     } catch (error) {
       console.error("Error resuming task:", error)
@@ -324,7 +334,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to complete task")
       }
 
-      await fetchDashboardData() // Refresh data
+      await fetchDashboardData()
       toast.success("Task completed successfully")
     } catch (error) {
       console.error("Error completing task:", error)
@@ -347,7 +357,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       return <div className="text-sm font-medium">{formatDuration(totalSeconds)}</div>
     }
 
-    if (activeEntry && activeEntry.status === "running") {
+    if (activeEntry?.is_currently_active) {
       // Show running timer
       return (
         <div className="flex items-center gap-2">
@@ -359,7 +369,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       )
     }
 
-    if (activeEntry && activeEntry.status === "paused") {
+    if (activeEntry?.is_currently_paused) {
       // Show paused timer with accumulated time
       return (
         <div className="flex items-center gap-2">
@@ -371,10 +381,13 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       )
     }
 
-    // Show accumulated time for in-progress tasks or 0 for assigned tasks
+    // Show accumulated time for tasks without active entries
     const taskEntries = task.time_entries || []
     const totalSeconds = taskEntries.reduce((sum: number, entry: any) => {
-      return sum + (entry.duration_seconds || 0)
+      if (entry.status === "completed") {
+        return sum + (entry.duration_seconds || 0)
+      }
+      return sum
     }, 0)
 
     return <div className="text-sm text-gray-600">{totalSeconds > 0 ? formatDuration(totalSeconds) : "0h 0m"}</div>
@@ -394,7 +407,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     }
 
     if (!activeEntry) {
-      // Task not started
+      // Task not started or no active time entry
       return (
         <Button
           onClick={() => startTimeTracking(task.id)}
@@ -408,7 +421,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       )
     }
 
-    if (activeEntry.is_active && activeEntry.status === "running") {
+    if (activeEntry.is_currently_active) {
       // Task is running
       return (
         <div className="flex items-center gap-2">
@@ -427,7 +440,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
           </Button>
         </div>
       )
-    } else if (activeEntry.status === "paused") {
+    } else if (activeEntry.is_currently_paused) {
       // Task is paused
       return (
         <div className="flex items-center gap-2">
