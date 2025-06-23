@@ -62,11 +62,14 @@ export async function middleware(request: NextRequest) {
 
     // If there's an auth error, clear the session
     if (error) {
-      console.log("Auth error in middleware:", error.message)
+      console.log("Auth error in middleware:", error)
+      // Clear auth cookies
+      response.cookies.delete("sb-access-token")
+      response.cookies.delete("sb-refresh-token")
 
       // If trying to access protected routes, redirect to login
       if (request.nextUrl.pathname.startsWith("/dashboard")) {
-        return NextResponse.redirect(new URL("/auth/login?error=auth_error", request.url))
+        return NextResponse.redirect(new URL("/auth/login", request.url))
       }
       return response
     }
@@ -77,68 +80,61 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(new URL("/auth/login", request.url))
       }
 
-      // Verify user exists in our database with better error handling
-      try {
-        const { data: orgData, error: orgError } = await supabase
-          .from("organizations")
-          .select("id")
-          .eq("id", user.id)
-          .maybeSingle()
+      // Verify user exists in our database
+      const userType = user.user_metadata?.user_type
+      let userExists = false
 
-        const { data: empData, error: empError } = await supabase
-          .from("employees")
-          .select("id")
-          .eq("id", user.id)
-          .maybeSingle()
+      if (userType === "organization") {
+        const { data: orgData } = await supabase.from("organizations").select("id").eq("id", user.id).single()
+        userExists = !!orgData
+      } else {
+        const { data: empData } = await supabase.from("employees").select("id").eq("id", user.id).single()
+        userExists = !!empData
+      }
 
-        // If both queries failed, there's a database issue
-        if (orgError && empError) {
-          console.error("Database error checking user:", { orgError, empError })
-          return NextResponse.redirect(new URL("/auth/login?error=db_error", request.url))
-        }
-
-        // If user doesn't exist in either table
-        if (!orgData && !empData) {
-          console.log("User not found in database:", user.id)
-          return NextResponse.redirect(new URL("/auth/login?error=user_not_found", request.url))
-        }
-      } catch (dbError) {
-        console.error("Database connection error:", dbError)
-        return NextResponse.redirect(new URL("/auth/login?error=db_connection", request.url))
+      // If user doesn't exist in our database, redirect to login
+      if (!userExists) {
+        console.log("User not found in database, clearing session")
+        await supabase.auth.signOut()
+        return NextResponse.redirect(new URL("/auth/login?error=user_not_found", request.url))
       }
     }
 
-    // Handle auth page redirects more carefully
+    // Redirect authenticated users away from auth pages
     if (request.nextUrl.pathname.startsWith("/auth") && user) {
-      // Only redirect if we can verify the user exists in our database
-      try {
-        const { data: orgData } = await supabase.from("organizations").select("id").eq("id", user.id).maybeSingle()
+      // Double-check user exists in database before redirecting
+      const userType = user.user_metadata?.user_type
+
+      if (userType === "organization") {
+        const { data: orgData } = await supabase.from("organizations").select("id").eq("id", user.id).single()
 
         if (orgData) {
           return NextResponse.redirect(new URL("/dashboard/organization", request.url))
         }
-
-        const { data: empData } = await supabase.from("employees").select("id").eq("id", user.id).maybeSingle()
+      } else {
+        const { data: empData } = await supabase.from("employees").select("id").eq("id", user.id).single()
 
         if (empData) {
           return NextResponse.redirect(new URL("/dashboard/employee", request.url))
         }
-
-        // If user exists in auth but not in our tables, don't redirect
-        console.log("Authenticated user not found in database tables")
-      } catch (error) {
-        console.error("Error checking user in database:", error)
-        // Don't redirect if there's a database error
       }
+
+      // If user doesn't exist in database, sign them out
+      await supabase.auth.signOut()
+      return NextResponse.redirect(new URL("/auth/login?error=user_not_found", request.url))
     }
 
     return response
   } catch (error) {
     console.error("Middleware error:", error)
 
+    // Clear potentially corrupted auth state
+    response.cookies.delete("sb-access-token")
+    response.cookies.delete("sb-refresh-token")
+
     // If trying to access protected routes, redirect to login
     if (request.nextUrl.pathname.startsWith("/dashboard")) {
-      return NextResponse.redirect(new URL("/auth/login?error=middleware_error", request.url))
+      return NextResponse.redirect(new URL("/auth/login", request.url))
     }
 
     return response
