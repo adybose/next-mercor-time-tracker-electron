@@ -55,17 +55,15 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       setTimers((prev) => {
         const newTimers = new Map(prev)
         activeTimeEntries.forEach((entry, taskId) => {
-          if (entry.is_currently_active) {
+          if (entry.display_status === "running" && entry.is_currently_active) {
             // Only update running tasks
             const startTime = new Date(entry.start_time).getTime()
             const currentTime = Date.now()
             const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
             const currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
             newTimers.set(taskId, Math.max(0, currentDurationSeconds))
-          } else if (entry.is_currently_paused) {
-            // For paused tasks, use the stored duration
-            newTimers.set(taskId, entry.display_duration_seconds || 0)
           }
+          // For paused tasks, keep the stored duration (don't update)
         })
         return newTimers
       })
@@ -106,7 +104,13 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
 
       // Get time tracking status
       const statusResponse = await fetch("/api/time-tracking/status")
-      const statusData = await statusResponse.json()
+      let statusData = { time_entries: [], employee_status: "offline" }
+
+      if (statusResponse.ok) {
+        statusData = await statusResponse.json()
+      } else {
+        console.error("Failed to fetch time tracking status")
+      }
 
       // Calculate total time logged including current active time
       let totalSeconds = 0
@@ -146,18 +150,18 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
 
       // Set active time entries from status API
       const entriesMap = new Map<string, any>()
+      const timersMap = new Map<string, number>()
+
       statusData.time_entries?.forEach((entry: any) => {
         if (entry.is_active) {
           entriesMap.set(entry.task_id, entry)
           // Initialize timer with current duration
-          setTimers((prev) => {
-            const newTimers = new Map(prev)
-            newTimers.set(entry.task_id, entry.display_duration_seconds || 0)
-            return newTimers
-          })
+          timersMap.set(entry.task_id, entry.display_duration_seconds || 0)
         }
       })
+
       setActiveTimeEntries(entriesMap)
+      setTimers(timersMap)
     } catch (error) {
       console.error("Error fetching dashboard data:", error)
       toast.error("Failed to load dashboard data")
@@ -258,6 +262,9 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to start task")
       }
 
+      const result = await response.json()
+      console.log("Task started:", result)
+
       await fetchDashboardData()
       toast.success("Task started successfully")
     } catch (error) {
@@ -271,19 +278,46 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const pauseTimeTracking = async (taskId: string) => {
     setTaskLoading(taskId, true)
     try {
+      console.log("Attempting to pause task:", taskId)
+
       const response = await fetch("/api/time-tracking/pause", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id: taskId }),
       })
 
+      const result = await response.json()
+      console.log("Pause response:", result)
+
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || "Failed to pause task")
+        throw new Error(result.error || "Failed to pause task")
       }
 
+      // Immediately update local state to show paused status
+      setActiveTimeEntries((prev) => {
+        const newMap = new Map(prev)
+        const entry = newMap.get(taskId)
+        if (entry) {
+          newMap.set(taskId, {
+            ...entry,
+            display_status: "paused",
+            is_currently_active: false,
+            is_currently_paused: true,
+            current_duration_seconds: result.current_duration_seconds,
+          })
+        }
+        return newMap
+      })
+
+      // Update timer to show paused time
+      setTimers((prev) => {
+        const newMap = new Map(prev)
+        newMap.set(taskId, result.current_duration_seconds || 0)
+        return newMap
+      })
+
       await fetchDashboardData()
-      toast.success("Task paused")
+      toast.success("Task paused successfully")
     } catch (error) {
       console.error("Error pausing task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to pause task")
@@ -295,6 +329,8 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const resumeTimeTracking = async (taskId: string) => {
     setTaskLoading(taskId, true)
     try {
+      console.log("Attempting to resume task:", taskId)
+
       const response = await fetch("/api/time-tracking/resume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -305,13 +341,31 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         }),
       })
 
+      const result = await response.json()
+      console.log("Resume response:", result)
+
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || "Failed to resume task")
+        throw new Error(result.error || "Failed to resume task")
       }
 
+      // Immediately update local state to show running status
+      setActiveTimeEntries((prev) => {
+        const newMap = new Map(prev)
+        const entry = newMap.get(taskId)
+        if (entry) {
+          newMap.set(taskId, {
+            ...entry,
+            display_status: "running",
+            is_currently_active: true,
+            is_currently_paused: false,
+            total_paused_seconds: result.total_paused_seconds,
+          })
+        }
+        return newMap
+      })
+
       await fetchDashboardData()
-      toast.success("Task resumed")
+      toast.success("Task resumed successfully")
     } catch (error) {
       console.error("Error resuming task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to resume task")
@@ -357,7 +411,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       return <div className="text-sm font-medium">{formatDuration(totalSeconds)}</div>
     }
 
-    if (activeEntry?.is_currently_active) {
+    if (activeEntry?.display_status === "running" && activeEntry?.is_currently_active) {
       // Show running timer
       return (
         <div className="flex items-center gap-2">
@@ -369,7 +423,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       )
     }
 
-    if (activeEntry?.is_currently_paused) {
+    if (activeEntry?.display_status === "paused" && activeEntry?.is_currently_paused) {
       // Show paused timer with accumulated time
       return (
         <div className="flex items-center gap-2">
@@ -421,7 +475,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       )
     }
 
-    if (activeEntry.is_currently_active) {
+    if (activeEntry.display_status === "running" && activeEntry.is_currently_active) {
       // Task is running
       return (
         <div className="flex items-center gap-2">
@@ -440,7 +494,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
           </Button>
         </div>
       )
-    } else if (activeEntry.is_currently_paused) {
+    } else if (activeEntry.display_status === "paused" && activeEntry.is_currently_paused) {
       // Task is paused
       return (
         <div className="flex items-center gap-2">

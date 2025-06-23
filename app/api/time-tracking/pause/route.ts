@@ -38,22 +38,35 @@ export async function POST(request: NextRequest) {
       .eq("task_id", task_id)
       .eq("employee_id", employee.id)
       .eq("is_active", true)
-      .eq("status", "running")
       .single()
 
     if (entryError || !activeEntry) {
+      console.error("No active time entry found:", entryError)
       return NextResponse.json({ error: "No active time entry found for this task" }, { status: 404 })
     }
 
-    // Calculate current duration
+    // Only pause if currently running
+    if (activeEntry.status !== "running") {
+      return NextResponse.json({ error: "Task is not currently running" }, { status: 400 })
+    }
+
+    // Calculate current duration up to this pause point
     const startTime = new Date(activeEntry.start_time).getTime()
     const pauseTime = Date.now()
     const totalPausedMs = (activeEntry.total_paused_seconds || 0) * 1000
     const currentDurationMs = pauseTime - startTime - totalPausedMs
     const currentDurationSeconds = Math.max(0, Math.floor(currentDurationMs / 1000))
 
+    console.log("Pausing task:", {
+      task_id,
+      entry_id: activeEntry.id,
+      start_time: activeEntry.start_time,
+      current_duration: currentDurationSeconds,
+      total_paused_before: activeEntry.total_paused_seconds || 0,
+    })
+
     // Update the time entry to paused status
-    const { error: updateError } = await supabase
+    const { data: updatedEntry, error: updateError } = await supabase
       .from("time_entries")
       .update({
         status: "paused",
@@ -62,28 +75,22 @@ export async function POST(request: NextRequest) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", activeEntry.id)
+      .select()
+      .single()
 
     if (updateError) {
       console.error("Error updating time entry:", updateError)
       return NextResponse.json({ error: "Failed to pause time tracking" }, { status: 500 })
     }
 
-    // Update task status to remain "In Progress" (don't change it)
-    const { error: taskUpdateError } = await supabase
-      .from("tasks")
-      .update({
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", task_id)
-
-    if (taskUpdateError) {
-      console.error("Error updating task:", taskUpdateError)
-    }
+    console.log("Successfully paused task:", updatedEntry)
 
     return NextResponse.json({
       message: "Time tracking paused successfully",
       current_duration_seconds: currentDurationSeconds,
       entry_id: activeEntry.id,
+      status: "paused",
+      updated_entry: updatedEntry,
     })
   } catch (error) {
     console.error("Error pausing time tracking:", error)
