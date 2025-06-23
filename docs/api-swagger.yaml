@@ -8,7 +8,7 @@ info:
     email: support@timetracker.com
 
 servers:
-  - url: https://your-app.vercel.app
+  - url: https://next-mercor-time-tracker.vercel.app/
     description: Production server
   - url: http://localhost:3000
     description: Development server
