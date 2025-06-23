@@ -4,177 +4,128 @@ import { type NextRequest, NextResponse } from "next/server"
 export async function POST(request: NextRequest) {
   try {
     const supabase = createClient()
-    const { organization_id } = await request.json()
+    const { employee_id, organization_id } = await request.json()
 
-    // First, update all running time entries with current elapsed time
-    const { data: runningEntries } = await supabase
-      .from("time_entries")
-      .select("*")
-      .eq("status", "running")
-      .eq("is_active", true)
-
-    // Update running entries with current elapsed time
-    for (const entry of runningEntries || []) {
-      const startTime = new Date(entry.start_time).getTime()
-      const currentTime = Date.now()
-      const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
-      const currentElapsedMs = currentTime - startTime - totalPausedMs
-      const currentElapsedSeconds = Math.max(0, Math.floor(currentElapsedMs / 1000))
-
-      // Update the current_duration_seconds for real-time tracking
-      await supabase
-        .from("time_entries")
-        .update({
-          current_duration_seconds: currentElapsedSeconds,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", entry.id)
-
-      // Also update the task's time_spent with current running time
-      await supabase
-        .from("tasks")
-        .update({
-          time_spent: currentElapsedSeconds,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", entry.task_id)
-    }
-
-    // Get all employees in the organization
-    const { data: employees } = await supabase
-      .from("employees")
-      .select(`
-        id,
-        first_name,
-        last_name,
-        email,
-        is_active
-      `)
-      .eq("organization_id", organization_id)
-      .eq("is_active", true)
-
-    const employeeData = []
-    let totalHoursToday = 0
-    let totalHoursWeek = 0
-    let totalHoursAllTime = 0
-    let activeEmployees = 0
-
-    const today = new Date()
-    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-    const startOfWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000)
-
-    for (const employee of employees || []) {
-      // Get all time entries for this employee (including running ones)
-      const { data: timeEntries } = await supabase
-        .from("time_entries")
-        .select(`
-          *,
-          tasks!inner(
-            id,
-            task_name,
-            projects!inner(
-              id,
-              name
-            )
-          )
-        `)
-        .eq("employee_id", employee.id)
-
-      // Get currently active time entry
-      const { data: activeEntry } = await supabase
-        .from("time_entries")
-        .select(`
-          *,
-          tasks!inner(
-            id,
-            task_name,
-            projects!inner(
-              id,
-              name
-            )
-          )
-        `)
-        .eq("employee_id", employee.id)
-        .in("status", ["running", "paused"])
+    if (employee_id) {
+      // Employee-specific refresh
+      const { data: employee, error: empError } = await supabase
+        .from("employees")
+        .select("*")
+        .eq("id", employee_id)
         .single()
 
-      let employeeTotalAllTime = 0
-      let employeeTotalToday = 0
-      let employeeTotalWeek = 0
-      let currentActiveSeconds = 0
+      if (empError) throw empError
 
-      // Calculate time from all entries
-      for (const entry of timeEntries || []) {
-        let entryDuration = 0
+      // Get all tasks for this employee
+      const { data: tasks, error: tasksError } = await supabase
+        .from("tasks")
+        .select(`
+          *,
+          projects!inner(id, name),
+          time_entries(*)
+        `)
+        .eq("employee_id", employee_id)
+        .eq("is_active", true)
 
-        if (entry.status === "completed" && entry.duration_seconds) {
-          // Use final duration for completed entries
-          entryDuration = entry.duration_seconds
-        } else if (entry.status === "running" && entry.is_active) {
-          // Calculate current duration for running entries
-          const startTime = new Date(entry.start_time).getTime()
-          const currentTime = Date.now()
-          const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
-          const currentElapsedMs = currentTime - startTime - totalPausedMs
-          entryDuration = Math.max(0, Math.floor(currentElapsedMs / 1000))
-          currentActiveSeconds = entryDuration
-        } else if (entry.status === "paused") {
-          // Use current duration for paused entries
-          entryDuration = entry.current_duration_seconds || 0
-        }
+      if (tasksError) throw tasksError
 
-        employeeTotalAllTime += entryDuration
+      // Get active time entries
+      const { data: activeEntries, error: activeError } = await supabase
+        .from("time_entries")
+        .select("*")
+        .eq("employee_id", employee_id)
+        .in("status", ["running", "paused"])
+        .eq("is_active", true)
 
-        // Check if entry is from today
-        const entryDate = new Date(entry.start_time)
-        if (entryDate >= startOfToday) {
-          employeeTotalToday += entryDuration
-        }
+      if (activeError) throw activeError
 
-        // Check if entry is from this week
-        if (entryDate >= startOfWeek) {
-          employeeTotalWeek += entryDuration
-        }
-      }
+      // Calculate total time including current active time
+      let totalSeconds = 0
 
-      // Determine employee status
-      const isActive = activeEntry && (activeEntry.status === "running" || activeEntry.status === "paused")
-      if (isActive) activeEmployees++
-
-      employeeData.push({
-        id: employee.id,
-        name: `${employee.first_name} ${employee.last_name}`,
-        email: employee.email,
-        status: isActive ? "Active" : "Inactive",
-        currentTask: activeEntry?.tasks?.task_name || null,
-        currentProject: activeEntry?.tasks?.projects?.name || null,
-        totalAllTime: employeeTotalAllTime,
-        totalLastWeek: employeeTotalWeek,
-        totalToday: employeeTotalToday,
-        currentActiveSeconds,
-        activeEntries: timeEntries?.length || 0,
+      // Add completed time from all tasks
+      tasks?.forEach((task) => {
+        const taskEntries = task.time_entries || []
+        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
+          if (entry.status === "completed" && entry.duration_seconds) {
+            return sum + entry.duration_seconds
+          }
+          return sum
+        }, 0)
+        totalSeconds += taskTotal
       })
 
-      totalHoursAllTime += employeeTotalAllTime
-      totalHoursToday += employeeTotalToday
-      totalHoursWeek += employeeTotalWeek
+      // Add current active/paused time
+      activeEntries?.forEach((entry) => {
+        const startTime = new Date(entry.start_time).getTime()
+        const currentTime = Date.now()
+        const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
+
+        let currentDurationSeconds = 0
+        if (entry.status === "running") {
+          currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
+        } else if (entry.status === "paused" && entry.pause_start_time) {
+          const pauseTime = new Date(entry.pause_start_time).getTime()
+          currentDurationSeconds = Math.floor((pauseTime - startTime - totalPausedMs) / 1000)
+        }
+
+        totalSeconds += Math.max(0, currentDurationSeconds)
+      })
+
+      return NextResponse.json({
+        employee: {
+          ...employee,
+          totalHoursLogged: totalSeconds,
+          hasRunningTasks: activeEntries?.some((e) => e.status === "running") || false,
+          hasPausedTasks: activeEntries?.some((e) => e.status === "paused") || false,
+        },
+        tasks: tasks?.map((task) => {
+          const activeEntry = activeEntries?.find((e) => e.task_id === task.id)
+          return {
+            ...task,
+            currentTimeEntry: activeEntry || null,
+          }
+        }),
+      })
+    } else if (organization_id) {
+      // Organization-wide refresh
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SITE_URL}/api/time-tracking/summary?organization_id=${organization_id}`,
+      )
+      const summaryData = await response.json()
+
+      // Calculate summary statistics
+      const employees = summaryData.employeeTimeData || []
+      const totalHoursToday = employees.reduce((sum: number, emp: any) => sum + (emp.hoursToday || 0), 0) * 3600
+      const totalHoursWeek = employees.reduce((sum: number, emp: any) => sum + (emp.hoursLastWeek || 0), 0) * 3600
+      const totalHoursAllTime = employees.reduce((sum: number, emp: any) => sum + (emp.hoursAllTime || 0), 0) * 3600
+      const activeEmployees = employees.filter((emp: any) => emp.status === "Active" || emp.status === "Paused").length
+
+      return NextResponse.json({
+        employees: employees.map((emp: any) => ({
+          id: emp.employee.id,
+          name: `${emp.employee.first_name} ${emp.employee.last_name}`,
+          email: emp.employee.email,
+          status: emp.status,
+          currentTask: emp.currentTask,
+          currentProject: emp.project.name,
+          totalAllTime: emp.hoursAllTime * 3600,
+          totalLastWeek: emp.hoursLastWeek * 3600,
+          totalToday: emp.hoursToday * 3600,
+          activeEntries: emp.totalEntries,
+        })),
+        summary: {
+          totalEmployees: employees.length,
+          activeEmployees,
+          totalHoursToday,
+          totalHoursWeek,
+          totalHoursAllTime,
+        },
+      })
     }
 
-    const summary = {
-      totalEmployees: employees?.length || 0,
-      activeEmployees,
-      totalHoursToday,
-      totalHoursWeek,
-      totalHoursAllTime,
-    }
-
-    return NextResponse.json({
-      success: true,
-      employees: employeeData,
-      summary,
-    })
+    return NextResponse.json({ error: "Missing employee_id or organization_id" }, { status: 400 })
   } catch (error) {
-    console.error("Refresh error:", error)
+    console.error("Error refreshing time tracking data:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

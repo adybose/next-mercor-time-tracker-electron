@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
         id,
         project_id,
         employee_id,
+        task_name,
         projects!inner(id, name, organization_id)
       `)
       .eq("projects.organization_id", organizationId)
@@ -50,12 +51,25 @@ export async function GET(request: NextRequest) {
         *,
         employees!inner(id, first_name, last_name, email, organization_id),
         projects!inner(id, name, organization_id),
-        tasks!inner(id, project_id, employee_id)
+        tasks!inner(id, project_id, employee_id, task_name)
       `)
       .eq("employees.organization_id", organizationId)
-      .not("duration_seconds", "is", null)
 
     if (timeEntriesError) throw timeEntriesError
+
+    // Get currently active time entries
+    const { data: activeEntries, error: activeError } = await supabase
+      .from("time_entries")
+      .select(`
+        *,
+        employees!inner(id, first_name, last_name, email, organization_id),
+        tasks!inner(id, task_name)
+      `)
+      .eq("employees.organization_id", organizationId)
+      .in("status", ["running", "paused"])
+      .eq("is_active", true)
+
+    if (activeError) throw activeError
 
     // Create employee-project relationships from tasks
     const employeeProjectMap = new Map()
@@ -67,6 +81,7 @@ export async function GET(request: NextRequest) {
             employeeId: task.employee_id,
             projectId: task.project_id,
             projectName: task.projects.name,
+            currentTask: null,
           })
         }
       }
@@ -80,7 +95,28 @@ export async function GET(request: NextRequest) {
       const projectId = entry.project_id
       const key = `${employeeId}-${projectId}`
 
-      const durationHours = (entry.duration_seconds || 0) / 3600
+      let durationHours = 0
+
+      // Calculate duration based on entry status
+      if (entry.status === "completed" && entry.duration_seconds) {
+        durationHours = entry.duration_seconds / 3600
+      } else if (entry.is_active && (entry.status === "running" || entry.status === "paused")) {
+        // Calculate current duration for active entries
+        const startTime = new Date(entry.start_time).getTime()
+        const currentTime = Date.now()
+        const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
+
+        let currentDurationMs = 0
+        if (entry.status === "running") {
+          currentDurationMs = currentTime - startTime - totalPausedMs
+        } else if (entry.status === "paused" && entry.pause_start_time) {
+          const pauseTime = new Date(entry.pause_start_time).getTime()
+          currentDurationMs = pauseTime - startTime - totalPausedMs
+        }
+
+        durationHours = Math.max(0, currentDurationMs) / (1000 * 3600)
+      }
+
       const entryDate = new Date(entry.start_time)
       const today = new Date()
       const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000)
@@ -96,6 +132,8 @@ export async function GET(request: NextRequest) {
           hoursLastWeek: 0,
           hoursToday: 0,
           totalEntries: 0,
+          currentTask: null,
+          status: "Inactive",
         })
       }
 
@@ -109,6 +147,24 @@ export async function GET(request: NextRequest) {
 
       if (isToday) {
         data.hoursToday += durationHours
+      }
+    })
+
+    // Update with current task information and status
+    activeEntries?.forEach((entry: any) => {
+      const employeeId = entry.employee_id
+      const projectId = entry.project_id
+      const key = `${employeeId}-${projectId}`
+
+      if (employeeTimeMap.has(key)) {
+        const data = employeeTimeMap.get(key)
+        data.currentTask = entry.tasks.task_name
+
+        if (entry.status === "running") {
+          data.status = "Active"
+        } else if (entry.status === "paused") {
+          data.status = "Paused"
+        }
       }
     })
 
@@ -126,6 +182,8 @@ export async function GET(request: NextRequest) {
             hoursLastWeek: 0,
             hoursToday: 0,
             totalEntries: 0,
+            currentTask: null,
+            status: "Inactive",
           })
         }
       }

@@ -74,22 +74,21 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
       setTimers((prev) => {
         const newTimers = new Map(prev)
         activeTimeEntries.forEach((entry, taskId) => {
-          if (entry.is_active && entry.status === "running") {
-            const startTime = new Date(entry.start_time).getTime()
-            const pauseTime = entry.pause_start_time ? new Date(entry.pause_start_time).getTime() : 0
-            const currentTime = Date.now()
+          const startTime = new Date(entry.start_time).getTime()
+          const currentTime = Date.now()
+          const totalPausedMs = (entry.total_paused_seconds || 0) * 1000
 
-            let elapsedSeconds = 0
-            if (pauseTime > 0) {
-              // Currently paused
-              elapsedSeconds = Math.floor((pauseTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
-            } else {
-              // Currently running
-              elapsedSeconds = Math.floor((currentTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
-            }
-
-            newTimers.set(taskId, Math.max(0, elapsedSeconds))
+          let currentDurationSeconds = 0
+          if (entry.status === "running" && entry.is_active) {
+            // Currently running
+            currentDurationSeconds = Math.floor((currentTime - startTime - totalPausedMs) / 1000)
+          } else if (entry.status === "paused" && entry.pause_start_time) {
+            // Currently paused - show time up to pause
+            const pauseTime = new Date(entry.pause_start_time).getTime()
+            currentDurationSeconds = Math.floor((pauseTime - startTime - totalPausedMs) / 1000)
           }
+
+          newTimers.set(taskId, Math.max(0, currentDurationSeconds))
         })
         return newTimers
       })
@@ -102,6 +101,19 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     try {
       setLoading(true)
 
+      // Use the refresh API to get accurate data
+      const response = await fetch("/api/time-tracking/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employee_id: employee.id }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch dashboard data")
+      }
+
+      const data = await response.json()
+
       // Fetch organization name
       const { data: orgData, error: orgError } = await supabase
         .from("organizations")
@@ -113,73 +125,27 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         console.error("Organization fetch error:", orgError)
       }
 
-      // Fetch tasks with time entries
-      const { data: tasksData, error: tasksError } = await supabase
-        .from("tasks")
-        .select(`
-          *,
-          projects!inner(id, name),
-          time_entries(*)
-        `)
-        .eq("employee_id", employee.id)
-        .eq("is_active", true)
-
-      if (tasksError) {
-        console.error("Tasks fetch error:", tasksError)
-      }
-
-      // Fetch active time entries
-      const { data: activeEntries, error: activeError } = await supabase
-        .from("time_entries")
-        .select("*")
-        .eq("employee_id", employee.id)
-        .in("status", ["running", "paused"])
-
-      if (activeError) {
-        console.error("Active entries fetch error:", activeError)
-      }
-
-      // Calculate total time logged
-      let totalSeconds = 0
-      tasksData?.forEach((task) => {
-        const taskEntries = task.time_entries || []
-        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
-          return sum + (entry.duration_seconds || 0)
-        }, 0)
-        totalSeconds += taskTotal
-      })
-
-      // Add currently running time
-      activeEntries?.forEach((entry) => {
-        if (entry.is_active && entry.status === "running") {
-          const startTime = new Date(entry.start_time).getTime()
-          const currentTime = Date.now()
-          const elapsedSeconds = Math.floor((currentTime - startTime) / 1000) - (entry.total_paused_seconds || 0)
-          totalSeconds += Math.max(0, elapsedSeconds)
-        }
-      })
-
-      const assignedTasks = tasksData?.filter((task) => task.status !== "Completed").length || 0
-      const completedTasks = tasksData?.filter((task) => task.status === "Completed").length || 0
-
-      // Get unique projects
-      const uniqueProjects = new Set(tasksData?.map((task) => task.project_id))
-      const activeProjects = uniqueProjects.size
+      // Set stats from API response
+      const assignedTasks = data.tasks?.filter((task: any) => task.status !== "Completed").length || 0
+      const completedTasks = data.tasks?.filter((task: any) => task.status === "Completed").length || 0
+      const uniqueProjects = new Set(data.tasks?.map((task: any) => task.project_id))
 
       setStats({
-        totalHoursLogged: totalSeconds,
-        activeProjects,
+        totalHoursLogged: data.employee.totalHoursLogged || 0,
+        activeProjects: uniqueProjects.size,
         assignedTasks,
         completedTasks,
         organizationName: orgData?.name || orgData?.company_name || "Unknown Organization",
       })
 
-      setTasks(tasksData || [])
+      setTasks(data.tasks || [])
 
       // Set active time entries
       const entriesMap = new Map<string, TimeEntry>()
-      activeEntries?.forEach((entry) => {
-        entriesMap.set(entry.task_id, entry)
+      data.tasks?.forEach((task: any) => {
+        if (task.currentTimeEntry) {
+          entriesMap.set(task.id, task.currentTimeEntry)
+        }
       })
       setActiveTimeEntries(entriesMap)
     } catch (error) {
@@ -231,11 +197,6 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const refreshData = async () => {
     setRefreshing(true)
     try {
-      await fetch("/api/time-tracking/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employee_id: employee.id }),
-      })
       await fetchDashboardData()
       toast.success("Data refreshed successfully")
     } catch (error) {
@@ -287,20 +248,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to start task")
       }
 
-      // Update local state
-      const { data: newEntry } = await supabase
-        .from("time_entries")
-        .select("*")
-        .eq("task_id", taskId)
-        .eq("employee_id", employee.id)
-        .eq("is_active", true)
-        .single()
-
-      if (newEntry) {
-        setActiveTimeEntries((prev) => new Map(prev).set(taskId, newEntry))
-        setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "In Progress" } : task)))
-      }
-
+      await fetchDashboardData() // Refresh data
       toast.success("Task started successfully")
     } catch (error) {
       console.error("Error starting task:", error)
@@ -324,16 +272,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to pause task")
       }
 
-      // Update local state
-      setActiveTimeEntries((prev) => {
-        const newMap = new Map(prev)
-        const entry = newMap.get(taskId)
-        if (entry) {
-          newMap.set(taskId, { ...entry, is_active: false, status: "paused" })
-        }
-        return newMap
-      })
-
+      await fetchDashboardData() // Refresh data
       toast.success("Task paused")
     } catch (error) {
       console.error("Error pausing task:", error)
@@ -361,16 +300,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to resume task")
       }
 
-      // Update local state
-      setActiveTimeEntries((prev) => {
-        const newMap = new Map(prev)
-        const entry = newMap.get(taskId)
-        if (entry) {
-          newMap.set(taskId, { ...entry, is_active: true, status: "running" })
-        }
-        return newMap
-      })
-
+      await fetchDashboardData() // Refresh data
       toast.success("Task resumed")
     } catch (error) {
       console.error("Error resuming task:", error)
@@ -394,24 +324,8 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
         throw new Error(error.error || "Failed to complete task")
       }
 
-      // Update local state
-      setActiveTimeEntries((prev) => {
-        const newMap = new Map(prev)
-        newMap.delete(taskId)
-        return newMap
-      })
-
-      setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "Completed" } : task)))
-
-      // Update stats
-      setStats((prev) => ({
-        ...prev,
-        completedTasks: prev.completedTasks + 1,
-        assignedTasks: prev.assignedTasks - 1,
-      }))
-
+      await fetchDashboardData() // Refresh data
       toast.success("Task completed successfully")
-      await fetchDashboardData() // Refresh to get final time
     } catch (error) {
       console.error("Error completing task:", error)
       toast.error(error instanceof Error ? error.message : "Failed to complete task")
@@ -446,7 +360,7 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
     }
 
     if (activeEntry && activeEntry.status === "paused") {
-      // Show paused timer
+      // Show paused timer with accumulated time
       return (
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 text-sm font-mono bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
@@ -557,64 +471,13 @@ export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
 
   const refreshTotalHours = async () => {
     try {
-      // Calculate total including current running time
-      let totalSeconds = 0
-
-      // Add completed time from all tasks
-      tasks.forEach((task) => {
-        const taskEntries = task.time_entries || []
-        const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
-          return sum + (entry.duration_seconds || 0)
-        }, 0)
-        totalSeconds += taskTotal
-      })
-
-      // Add currently running time
-      activeTimeEntries.forEach((entry, taskId) => {
-        if (entry.is_active && entry.status === "running") {
-          const currentTimer = timers.get(taskId) || 0
-          totalSeconds += currentTimer
-        }
-      })
-
-      setStats((prev) => ({
-        ...prev,
-        totalHoursLogged: totalSeconds,
-      }))
-
+      await fetchDashboardData()
       toast.success("Total hours refreshed")
     } catch (error) {
       console.error("Error refreshing total hours:", error)
       toast.error("Failed to refresh total hours")
     }
   }
-
-  useEffect(() => {
-    // Update total hours when timers change
-    let totalSeconds = 0
-
-    // Add completed time from all tasks
-    tasks.forEach((task) => {
-      const taskEntries = task.time_entries || []
-      const taskTotal = taskEntries.reduce((sum: number, entry: any) => {
-        return sum + (entry.duration_seconds || 0)
-      }, 0)
-      totalSeconds += taskTotal
-    })
-
-    // Add currently running time
-    activeTimeEntries.forEach((entry, taskId) => {
-      if (entry.is_active && entry.status === "running") {
-        const currentTimer = timers.get(taskId) || 0
-        totalSeconds += currentTimer
-      }
-    })
-
-    setStats((prev) => ({
-      ...prev,
-      totalHoursLogged: totalSeconds,
-    }))
-  }, [timers, tasks, activeTimeEntries])
 
   if (loading) {
     return (
