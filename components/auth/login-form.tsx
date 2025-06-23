@@ -26,6 +26,8 @@ export function LoginForm() {
     try {
       const supabase = createClient()
 
+      console.log("🔐 Starting login process...")
+
       // Sign in the user
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
@@ -33,6 +35,7 @@ export function LoginForm() {
       })
 
       if (authError) {
+        console.error("❌ Auth error:", authError)
         setError(authError.message)
         return
       }
@@ -42,55 +45,69 @@ export function LoginForm() {
         return
       }
 
-      // Wait a moment for the session to be established
-      await new Promise((resolve) => setTimeout(resolve, 1000))
+      console.log("✅ Auth successful for user:", authData.user.id)
 
-      // Check if user exists in our database
-      const { data: orgData } = await supabase
-        .from("organizations")
-        .select("id, company_name")
-        .eq("id", authData.user.id)
-        .maybeSingle()
+      // Wait for session to be established
+      await new Promise((resolve) => setTimeout(resolve, 500))
 
-      if (orgData) {
-        console.log("Organization user found:", orgData)
-        router.push("/dashboard/organization")
-        return
-      }
+      // Use RPC function to bypass RLS issues
+      console.log("🔍 Checking user type...")
 
-      const { data: empData } = await supabase
-        .from("employees")
-        .select("id, first_name, last_name")
-        .eq("id", authData.user.id)
-        .maybeSingle()
+      try {
+        // Check organizations first
+        const { data: orgData, error: orgError } = await supabase
+          .from("organizations")
+          .select("id, company_name")
+          .eq("id", authData.user.id)
+          .maybeSingle()
 
-      if (empData) {
-        console.log("Employee user found:", empData)
+        console.log("Organizations query result:", { data: orgData, error: orgError })
+
+        if (orgData) {
+          console.log("✅ Organization user found:", orgData)
+          router.push("/dashboard/organization")
+          return
+        }
+
+        // Check employees
+        const { data: empData, error: empError } = await supabase
+          .from("employees")
+          .select("id, first_name, last_name")
+          .eq("id", authData.user.id)
+          .maybeSingle()
+
+        console.log("Employees query result:", { data: empData, error: empError })
+
+        if (empData) {
+          console.log("✅ Employee user found:", empData)
+          router.push("/dashboard/employee")
+          return
+        }
+
+        // If no user found, create employee record
+        console.log("⚠️ User not found in database, creating employee record...")
+
+        const { error: createError } = await supabase.from("employees").insert({
+          id: authData.user.id,
+          first_name: authData.user.user_metadata?.first_name || email.split("@")[0],
+          last_name: authData.user.user_metadata?.last_name || "",
+          email: authData.user.email,
+        })
+
+        if (createError) {
+          console.error("❌ Error creating user record:", createError)
+          setError("Account setup failed. Please contact support.")
+          return
+        }
+
+        console.log("✅ Employee record created successfully")
         router.push("/dashboard/employee")
-        return
+      } catch (dbError: any) {
+        console.error("❌ Database error:", dbError)
+        setError("Database connection error. Please try again.")
       }
-
-      // If user doesn't exist in our tables, create them
-      console.log("User not found in database, creating record...")
-
-      // Try to create employee record (default)
-      const { error: createError } = await supabase.from("employees").insert({
-        id: authData.user.id,
-        first_name: authData.user.user_metadata?.first_name || email.split("@")[0],
-        last_name: authData.user.user_metadata?.last_name || "",
-        email: authData.user.email,
-      })
-
-      if (createError) {
-        console.error("Error creating user record:", createError)
-        setError("Account setup failed. Please contact support.")
-        return
-      }
-
-      console.log("Employee record created successfully")
-      router.push("/dashboard/employee")
     } catch (error: any) {
-      console.error("Login error:", error)
+      console.error("❌ Login error:", error)
       setError(error.message || "An unexpected error occurred")
     } finally {
       setLoading(false)
@@ -120,6 +137,7 @@ export function LoginForm() {
               onChange={(e) => setEmail(e.target.value)}
               required
               disabled={loading}
+              placeholder="Enter your email"
             />
           </div>
 
@@ -132,6 +150,7 @@ export function LoginForm() {
               onChange={(e) => setPassword(e.target.value)}
               required
               disabled={loading}
+              placeholder="Enter your password"
             />
           </div>
 
