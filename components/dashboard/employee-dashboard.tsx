@@ -3,14 +3,26 @@
 import { createClient } from "@/lib/supabase/client"
 import { useEffect, useState } from "react"
 
-const EmployeeDashboard = () => {
+interface Employee {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  organization_id?: string
+}
+
+interface EmployeeDashboardProps {
+  employee: Employee
+}
+
+export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   const [employeeData, setEmployeeData] = useState<any>(null)
   const supabase = createClient()
 
   useEffect(() => {
     const fetchEmployeeData = async () => {
       try {
-        const { data, error } = await supabase.from("employees").select("*").single() // Assuming you want to fetch data for a single employee
+        const { data, error } = await supabase.from("employees").select("*").eq("id", employee.id).single() // Assuming you want to fetch data for a single employee
 
         if (error) {
           console.error("Error fetching employee data:", error)
@@ -23,7 +35,7 @@ const EmployeeDashboard = () => {
     }
 
     fetchEmployeeData()
-  }, [])
+  }, [employee.id])
 
   if (!employeeData) {
     return <div>Loading employee data...</div>
@@ -38,5 +50,3 @@ const EmployeeDashboard = () => {
     </div>
   )
 }
-
-export default EmployeeDashboard
