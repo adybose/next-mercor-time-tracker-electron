@@ -1,0 +1,14 @@
+When a new organization user signs up, or a new employee is added, they are added to Users table under Authentication in Supabase. We must make sure these constraints are followed:
+1. No two employees in an organization can have the same email id.
+2. No two organizations can have the same email id.
+3. Organizations cannot add an employee if a User already exists with the same email id. In that case, they will have to use a different email id to add the employee.
+4. 
+
+
+
+
+
+creds:
+Sl No.  |  Organization  |  Email  |  Password  | employees
+1.      CloseAI         mail@qery.ai  Close@123  adi26mar@gmail.com
+2.      AcmeAI  aditya.bose@outlook.com  Acme@123  karunakarampandit@gmail.com
