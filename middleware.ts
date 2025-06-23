@@ -8,8 +8,12 @@ export async function middleware(request: NextRequest) {
     },
   })
 
-  // Skip middleware for debug pages
-  if (request.nextUrl.pathname.startsWith("/debug")) {
+  // Skip middleware for debug pages and static assets
+  if (
+    request.nextUrl.pathname.startsWith("/debug") ||
+    request.nextUrl.pathname.startsWith("/_next") ||
+    request.nextUrl.pathname.startsWith("/api")
+  ) {
     return response
   }
 
@@ -60,29 +64,61 @@ export async function middleware(request: NextRequest) {
       },
     )
 
-    // Get session instead of user to avoid "Auth session missing" error
     const {
       data: { session },
       error: sessionError,
     } = await supabase.auth.getSession()
 
-    // Log session error for debugging
     if (sessionError) {
       console.log("Session error in middleware:", sessionError.message)
     }
 
     const user = session?.user
 
+    // Handle logout requests - allow access to logout even when authenticated
+    if (request.nextUrl.pathname === "/auth/logout") {
+      return response
+    }
+
+    // Allow access to login page with ?force=true parameter
+    if (request.nextUrl.pathname === "/auth/login" && request.nextUrl.searchParams.get("force") === "true") {
+      return response
+    }
+
     // Protect dashboard routes
     if (request.nextUrl.pathname.startsWith("/dashboard")) {
       if (!user) {
         return NextResponse.redirect(new URL("/auth/login", request.url))
       }
+      return response
     }
 
-    // Handle authenticated users on auth pages
+    // Redirect authenticated users away from auth pages (except logout and forced login)
     if (request.nextUrl.pathname.startsWith("/auth") && user) {
-      // Simple redirect without database checks to avoid errors
+      // Don't redirect if it's logout or forced login
+      if (request.nextUrl.pathname === "/auth/logout" || request.nextUrl.searchParams.get("force") === "true") {
+        return response
+      }
+
+      // Check user type and redirect appropriately
+      try {
+        const { data: userTypeData } = await supabase.rpc("get_user_type", {
+          user_id: user.id,
+        })
+
+        if (userTypeData && userTypeData.length > 0) {
+          const userType = userTypeData[0]?.user_type
+          if (userType === "organization") {
+            return NextResponse.redirect(new URL("/dashboard/organization", request.url))
+          } else {
+            return NextResponse.redirect(new URL("/dashboard/employee", request.url))
+          }
+        }
+      } catch (error) {
+        console.error("Error checking user type in middleware:", error)
+      }
+
+      // Default redirect to employee dashboard
       return NextResponse.redirect(new URL("/dashboard/employee", request.url))
     }
 
