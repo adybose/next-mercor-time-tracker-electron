@@ -8,12 +8,17 @@ export async function middleware(request: NextRequest) {
     },
   })
 
-  // Skip middleware for debug pages and static assets
+  // Skip middleware for static files and API routes
   if (
-    request.nextUrl.pathname.startsWith("/debug") ||
     request.nextUrl.pathname.startsWith("/_next") ||
-    request.nextUrl.pathname.startsWith("/api")
+    request.nextUrl.pathname.startsWith("/api") ||
+    request.nextUrl.pathname.includes(".")
   ) {
+    return response
+  }
+
+  // Always allow access to logout page
+  if (request.nextUrl.pathname === "/logout") {
     return response
   }
 
@@ -75,12 +80,7 @@ export async function middleware(request: NextRequest) {
 
     const user = session?.user
 
-    // Handle logout requests - allow access to logout even when authenticated
-    if (request.nextUrl.pathname === "/auth/logout") {
-      return response
-    }
-
-    // Allow access to login page with ?force=true parameter
+    // Allow forced access to login page
     if (request.nextUrl.pathname === "/auth/login" && request.nextUrl.searchParams.get("force") === "true") {
       return response
     }
@@ -93,32 +93,8 @@ export async function middleware(request: NextRequest) {
       return response
     }
 
-    // Redirect authenticated users away from auth pages (except logout and forced login)
-    if (request.nextUrl.pathname.startsWith("/auth") && user) {
-      // Don't redirect if it's logout or forced login
-      if (request.nextUrl.pathname === "/auth/logout" || request.nextUrl.searchParams.get("force") === "true") {
-        return response
-      }
-
-      // Check user type and redirect appropriately
-      try {
-        const { data: userTypeData } = await supabase.rpc("get_user_type", {
-          user_id: user.id,
-        })
-
-        if (userTypeData && userTypeData.length > 0) {
-          const userType = userTypeData[0]?.user_type
-          if (userType === "organization") {
-            return NextResponse.redirect(new URL("/dashboard/organization", request.url))
-          } else {
-            return NextResponse.redirect(new URL("/dashboard/employee", request.url))
-          }
-        }
-      } catch (error) {
-        console.error("Error checking user type in middleware:", error)
-      }
-
-      // Default redirect to employee dashboard
+    // Only redirect authenticated users away from auth pages if not forced
+    if (request.nextUrl.pathname.startsWith("/auth") && user && request.nextUrl.searchParams.get("force") !== "true") {
       return NextResponse.redirect(new URL("/dashboard/employee", request.url))
     }
 
