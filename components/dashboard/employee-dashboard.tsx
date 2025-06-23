@@ -1,4 +1,3 @@
-import type React from "react"
 import { LogoutButton } from "./logout-button"
 
 interface Employee {
@@ -15,7 +14,7 @@ interface EmployeeDashboardProps {
   employee: Employee
 }
 
-const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ employee }) => {
+export function EmployeeDashboard({ employee }: EmployeeDashboardProps) {
   return (
     <div className="container mx-auto p-4">
       <div className="flex justify-between items-center mb-6">
@@ -69,5 +68,3 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ employee }) => {
     </div>
   )
 }
-
-export default EmployeeDashboard
