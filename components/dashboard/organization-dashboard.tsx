@@ -54,92 +54,7 @@ export function OrganizationDashboard({ organization }: OrganizationDashboardPro
     }
   }
 
-  // Auto-refresh stats every 30 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchStats(false) // Silent refresh
-    }, 30000)
-
-    return () => clearInterval(interval)
-  }, [organization.id])
-
-  useEffect(() => {
-    fetchStats()
-  }, [organization.id])
-
-  const fetchStats = async (showToast = true) => {
-    try {
-      if (showToast) setRefreshing(true)
-
-      // Update background time tracking first
-      await fetch("/api/time-tracking/update-background", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ organization_id: organization.id }),
-      })
-
-      // Get updated time tracking data
-      const timeResponse = await fetch("/api/time-tracking/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ organization_id: organization.id }),
-      })
-
-      let timeData = { summary: null }
-      if (timeResponse.ok) {
-        timeData = await timeResponse.json()
-      }
-
-      // Fetch other stats
-      const [employeesRes, projectsRes, tasksRes] = await Promise.all([
-        supabase.from("employees").select("id").eq("organization_id", organization.id).eq("is_active", true),
-        supabase.from("projects").select("id").eq("organization_id", organization.id).eq("is_active", true),
-        supabase.from("tasks").select("id, status").eq("is_active", true),
-      ])
-
-      const totalEmployees = employeesRes.data?.length || 0
-      const activeProjects = projectsRes.data?.length || 0
-      const totalTasks = tasksRes.data?.length || 0
-      const completedTasks = tasksRes.data?.filter((task) => task.status === "Completed").length || 0
-
-      setStats({
-        totalEmployees,
-        activeProjects,
-        totalTasks,
-        completedTasks,
-        totalHoursToday: timeData.summary?.totalHoursToday || 0,
-        totalHoursWeek: timeData.summary?.totalHoursWeek || 0,
-        totalHoursAllTime: timeData.summary?.totalHoursAllTime || 0,
-        activeEmployees: timeData.summary?.activeEmployees || 0,
-      })
-
-      if (showToast) {
-        toast.success("Dashboard data refreshed")
-      }
-    } catch (error) {
-      console.error("Error fetching stats:", error)
-      if (showToast) {
-        toast.error("Failed to refresh dashboard data")
-      }
-    } finally {
-      setRefreshing(false)
-      setLoading(false)
-    }
-  }
-
-  const formatDuration = (seconds: number): string => {
-    const hours = seconds / 3600
-    return `${hours.toFixed(1)}h`
-  }
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
-  }
-
+  // Only render the header/navbar and the message
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -151,10 +66,6 @@ export function OrganizationDashboard({ organization }: OrganizationDashboardPro
               <p className="text-sm text-gray-600">Manage your organization, employees, and projects</p>
             </div>
             <div className="flex items-center gap-2">
-              <Button onClick={() => fetchStats()} disabled={refreshing} variant="outline" size="sm">
-                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
-                {refreshing ? "Refreshing..." : "Refresh"}
-              </Button>
               <Button onClick={handleLogout} variant="outline" size="sm">
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
@@ -164,75 +75,11 @@ export function OrganizationDashboard({ organization }: OrganizationDashboardPro
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Employees</CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.totalEmployees}</div>
-              <p className="text-xs text-muted-foreground">{stats.activeEmployees} currently active</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Active Projects</CardTitle>
-              <Briefcase className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.activeProjects}</div>
-              <p className="text-xs text-muted-foreground">Projects in progress</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Tasks</CardTitle>
-              <CheckCircle className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.totalTasks}</div>
-              <p className="text-xs text-muted-foreground">{stats.completedTasks} completed</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Hours Today</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{formatDuration(stats.totalHoursToday)}</div>
-              <p className="text-xs text-muted-foreground">All employees combined</p>
-            </CardContent>
-          </Card>
+      {/* Message */}
+      <main className="flex flex-col items-center justify-center h-[60vh]">
+        <div className="bg-white rounded-lg shadow p-8 mt-12 text-center max-w-lg">
+          <p className="text-lg font-semibold mb-4">This app is for Employees of your Organization. Visit <a href="https://next-mercor-time-tracker.vercel.app" className="text-blue-600 underline" target="_blank" rel="noopener noreferrer">https://next-mercor-time-tracker.vercel.app</a> to track their work.</p>
         </div>
-
-        {/* Tabs */}
-        <Tabs defaultValue="employees" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="employees">Employees</TabsTrigger>
-            <TabsTrigger value="projects">Projects</TabsTrigger>
-            <TabsTrigger value="time-tracking">Time Tracking</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="employees">
-            <EmployeeManagement organizationId={organization.id} />
-          </TabsContent>
-
-          <TabsContent value="projects">
-            <ProjectManagement organizationId={organization.id} />
-          </TabsContent>
-
-          <TabsContent value="time-tracking">
-            <TimeTracking organizationId={organization.id} />
-          </TabsContent>
-        </Tabs>
       </main>
     </div>
   )
