@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -9,6 +9,8 @@ import { Play, Pause, Square, Clock, CheckCircle } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import type { Employee } from "@/lib/types"
+import { ScreenshotService } from "@/lib/screenshot-service"
+
 
 interface Task {
   id: string
@@ -47,6 +49,9 @@ export function EmployeeTimeTracking({ employee }: EmployeeTimeTrackingProps) {
   const [loading, setLoading] = useState(true)
 
   const supabase = createClient()
+  const screenshotService = useRef(new ScreenshotService()).current
+  // Track last screenshot time per task
+  const lastScreenshotTimes = useRef<Map<string, number>>(new Map())
 
   // Timer update effect
   useEffect(() => {
@@ -333,6 +338,37 @@ export function EmployeeTimeTracking({ employee }: EmployeeTimeTrackingProps) {
         return <Badge variant="outline">{status}</Badge>
     }
   }
+
+  // Screenshot interval effect
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      // For each active (running) time entry
+      activeTimeEntries.forEach(async (entry, taskId) => {
+        if (entry.is_active) {
+          const now = Date.now()
+          const lastTaken = lastScreenshotTimes.current.get(taskId) || 0
+          // 10 minutes = 600,000 ms
+          if (now - lastTaken >= 600_000) {
+            try {
+              if (window.electronAPI && window.electronAPI.takeScreenshot) {
+                const screenshotData = await window.electronAPI.takeScreenshot()
+                if (screenshotData) {
+                  await screenshotService.handleScreenshotUpload(screenshotData, entry.id)
+                  lastScreenshotTimes.current.set(taskId, now)
+                  toast.success("Screenshot uploaded automatically.")
+                }
+              }
+            } catch (err) {
+              console.error("Auto screenshot error:", err)
+              toast.error("Failed to upload automatic screenshot.")
+            }
+          }
+        }
+      })
+    }, 60_000) // Check every minute
+
+    return () => clearInterval(interval)
+  }, [activeTimeEntries, screenshotService])
 
   if (loading) {
     return (
